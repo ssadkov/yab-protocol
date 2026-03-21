@@ -52,6 +52,18 @@ module yab::strategy {
         }
     }
 
+    public fun range_sqrt_price_low(r: &Range): u128 {
+        r.sqrt_price_low
+    }
+
+    public fun range_sqrt_price_high(r: &Range): u128 {
+        r.sqrt_price_high
+    }
+
+    public fun max_swap_slippage_bps(params: &StrategyParams): u64 {
+        params.max_swap_slippage_bps
+    }
+
     /// Returns true when |current - center| / center >= trigger (BPS). If `center_price == 0`, returns true.
     public fun should_rebalance(
         current_price: u64,
