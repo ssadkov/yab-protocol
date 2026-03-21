@@ -1,0 +1,1075 @@
+# YAB Protocol — Smart Contract Implementation Guide
+> Cursor instructions for building the Yield AI Bitcoin vault on Aptos Move 2
+
+---
+
+## How To Work With This File
+
+**Read this before writing any code.**
+
+Work strictly step by step. After each step — stop and ask before continuing.
+
+Steps in order:
+1. Read `.skills/` folder completely
+2. Confirm understanding of "What You Are Building" section — summarize it back
+3. Create `Move.toml` — stop, show it, ask for Hyperion address confirmation
+4. Write `errors.move` — stop, confirm
+5. Write `math.move` — stop, run `aptos move compile`, show errors if any
+6. Write `oracle.move` — stop, compile, confirm
+7. Write `strategy.move` — stop, compile, confirm
+8. Write `vault.move` structs + initialize() only — stop, compile, confirm
+9. Write `vault.move` bootstrap() — stop, compile, confirm
+10. Write `vault.move` deposit() + withdraw() — stop, compile, confirm
+11. Write `vault.move` claim_rewards() + rebalance() — stop, compile, confirm
+12. Write `vault.move` governance functions + views — stop, compile, confirm
+13. Write tests — stop, run `aptos move test`, show results
+
+**Rules:**
+- Never skip a step or combine two steps into one without asking
+- If something is unclear — ask, do not assume
+- If Hyperion function signature does not match — stop and ask
+- Do not invent function names for Hyperion — use only signatures from section 7
+- Do not add features not described in this file — ask first
+
+---
+
+## What You Are Building
+
+**YAB (Yield AI Bitcoin)** is an automated liquidity manager (ALM) vault on the Aptos blockchain. Users deposit BTC or USDC and receive YAB tokens representing their share of a managed liquidity position. The vault automatically manages a concentrated liquidity position on Hyperion (Aptos CLMM DEX), rebalances when price moves out of range, and compounds trading fees back into the position.
+
+**The core loop:**
+1. User deposits BTC → vault mints YAB tokens at current NAV price
+2. Vault holds a CLMM position in the BTC/USDC pool on Hyperion
+3. The position earns trading fees from every swap that passes through the range
+4. When BTC price moves out of range → operator calls `rebalance()` → vault closes position, swaps to new ratio, opens new position centered on current price
+5. User burns YAB tokens → receives BTC proportional to their share + accumulated fees
+
+**Key design decisions:**
+- YAB token is denominated in BTC — price only goes up (from fees), never diluted
+- NAV is always calculated from Pyth oracle price, never from pool spot price (flash loan protection)
+- Rebalance is one atomic transaction — no pause, no MEV window
+- Reward tokens (RION etc.) are converted to BTC immediately on claim, never held
+- Performance fee (10%) taken only on profit at withdrawal — protocol earns when user earns
+- `bootstrap()` opens the first position; subsequent `deposit()` calls add to existing position
+- Strategy logic is in a separate `strategy.move` module — vault only calls its interface
+
+**What this is NOT:**
+- Not a lending protocol
+- Not a trading bot
+- Not a token bridge
+- The vault does not make directional bets on BTC price
+
+**Tech stack:**
+- L1: Aptos Network
+- DEX: Hyperion (CLMM, `github.com/Hyperfluid/hyperfluid-interface`)
+- Oracle: Pyth Network
+- Language: Move 2 (Aptos Framework)
+- Token standard: Fungible Asset (FA) — not legacy Coin
+
+---
+
+## 0. Before You Start
+
+### Install Aptos Agent Skills
+```bash
+npx skills add aptos-labs/aptos-agent-skills
+```
+These skills teach Cursor the latest Aptos Move 2 patterns, FA standard, object model, and Pyth oracle integration. **Always consult them before writing any Move code.**
+
+### Required tools
+```bash
+aptos --version   # >= 4.x (Move 2 support)
+```
+
+### Project scaffold
+```
+yab-protocol/
+├── Move.toml
+├── sources/
+│   ├── vault.move          # main vault logic
+│   ├── strategy.move       # strategy interface + default impl
+│   ├── oracle.move         # Pyth wrapper with circuit breaker
+│   ├── math.move           # sqrt price math (Q64.64)
+│   └── errors.move         # all error codes
+└── tests/
+    ├── vault_tests.move
+    ├── oracle_tests.move
+    └── math_tests.move
+```
+
+---
+
+## 1. Move.toml
+
+```toml
+[package]
+name = "yab_protocol"
+version = "1.0.0"
+upgrade_policy = "compatible"
+
+[addresses]
+yab      = "_"     # fill before deploy
+pyth     = "0x7e783b349d3e89cf5931af376ebeadbfab855b3fa239b7ada8f5a92fbea6b387"
+wormhole = "0x5bc11445584a763c1fa7ed39081f1b920954da14e04b32440cba863d03e19625"
+
+# Hyperion published addresses:
+#   mainnet: 0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c
+#   testnet: 0x69faed94da99abb7316cb3ec2eeaa1b961a47349fad8c584f67a930b0d14fec7
+
+[dependencies]
+AptosFramework = { git = "https://github.com/aptos-labs/aptos-core.git", subdir = "aptos-move/framework/aptos-framework", rev = "main" }
+AptosStdlib    = { git = "https://github.com/aptos-labs/aptos-core.git", subdir = "aptos-move/framework/aptos-stdlib",    rev = "main" }
+Pyth           = { git = "https://github.com/pyth-network/pyth-crosschain.git", subdir = "target_chains/aptos/contracts", rev = "main" }
+HyperionInterface = { git = "https://github.com/Hyperfluid/hyperfluid-interface" }
+```
+
+---
+
+## 2. Constants and Error Codes (`errors.move`)
+
+```move
+module yab::errors {
+    // oracle
+    const E_STALE_PRICE:          u64 = 1;
+    const E_PRICE_SPIKE:          u64 = 2;
+    const E_LOW_CONFIDENCE:       u64 = 3;
+    // auth
+    const E_NOT_ADMIN:            u64 = 10;
+    const E_NOT_OPERATOR:         u64 = 11;
+    // vault state
+    const E_ZERO_AMOUNT:          u64 = 20;
+    const E_INSUFFICIENT_SHARES:  u64 = 21;
+    const E_ZERO_SUPPLY:          u64 = 22;
+    const E_REBALANCE_NOT_NEEDED: u64 = 23;
+    const E_REBALANCE_TOO_EARLY:  u64 = 24;
+    const E_INVALID_SLIPPAGE:     u64 = 25;
+    const E_ALREADY_BOOTSTRAPPED: u64 = 26;  // bootstrap() called twice
+    // strategy
+    const E_RANGE_TOO_NARROW:     u64 = 30;
+    const E_FEE_TOO_HIGH:         u64 = 31;
+    const E_UNSUPPORTED_TOKEN:    u64 = 32;
+}
+```
+
+---
+
+## 3. Oracle Module (`oracle.move`)
+
+Wrap Pyth with three mandatory guards. **Every price read in the protocol MUST go through `get_safe_price()` — never call Pyth directly.**
+
+```move
+module yab::oracle {
+    use pyth::pyth;
+    use pyth::price_identifier;
+    use pyth::i64 as pyth_i64;
+    use aptos_framework::timestamp;
+    use yab::errors;
+
+    // ── Parameters (governance-adjustable via VaultConfig) ────────────────
+    const MAX_PRICE_AGE_SECS: u64 = 60;       // staleness threshold
+    const MAX_DEVIATION_BPS:  u64 = 500;       // 5% max move per rebalance
+    const MAX_CONF_BPS:       u64 = 100;       // 1% max Pyth confidence width
+
+    // BTC/USD price feed ID on Aptos mainnet
+    const BTC_USD_FEED: vector<u8> = x"e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43";
+
+    /// Returns BTC price in USD with 8 decimals. Aborts on any anomaly.
+    public fun get_safe_price(last_recorded_price: u64): u64 {
+        let feed_id = price_identifier::from_byte_vec(BTC_USD_FEED);
+        let price_obj = pyth::get_price(feed_id);
+
+        // Guard 1: staleness
+        let age = timestamp::now_seconds() - pyth::get_price_timestamp(price_obj);
+        assert!(age <= MAX_PRICE_AGE_SECS, errors::E_STALE_PRICE);
+
+        let raw = pyth_i64::get_magnitude_if_positive(pyth::get_price_magnitude(price_obj));
+
+        // Guard 2: deviation from last known price (skip if first call, i.e. last=0)
+        if (last_recorded_price > 0) {
+            let delta = if (raw > last_recorded_price) {
+                (raw - last_recorded_price) * 10000 / last_recorded_price
+            } else {
+                (last_recorded_price - raw) * 10000 / last_recorded_price
+            };
+            assert!(delta <= MAX_DEVIATION_BPS, errors::E_PRICE_SPIKE);
+        };
+
+        // Guard 3: confidence interval
+        let conf = pyth::get_price_conf(price_obj);
+        let conf_ratio = conf * 10000 / raw;
+        assert!(conf_ratio <= MAX_CONF_BPS, errors::E_LOW_CONFIDENCE);
+
+        raw
+    }
+}
+```
+
+---
+
+## 4. Math Module (`math.move`)
+
+Q64.64 sqrt price math for CLMM optimal split. Hyperion uses the same convention as Uniswap v3.
+
+```move
+module yab::math {
+    /// Integer square root (babylonian)
+    public fun sqrt_u128(x: u128): u128 {
+        if (x == 0) return 0;
+        let z = (x + 1) / 2;
+        let y = x;
+        while (z < y) { y = z; z = (x / z + z) / 2; };
+        y
+    }
+
+    /// Compute optimal BTC fraction to add to position given current price position.
+    /// All prices are sqrt prices in Q64.64 (multiply actual price by 2^64 before passing).
+    /// Returns btc_ratio in BPS (0–10000).
+    ///
+    /// Formula: ratio = (sqrt_high - sqrt_current) / (sqrt_high - sqrt_low)
+    public fun btc_ratio_bps(
+        sqrt_current: u128,
+        sqrt_low:     u128,
+        sqrt_high:    u128,
+    ): u64 {
+        assert!(sqrt_current >= sqrt_low && sqrt_current <= sqrt_high, 0);
+        let numerator   = (sqrt_high - sqrt_current) as u64;
+        let denominator = (sqrt_high - sqrt_low)     as u64;
+        if (denominator == 0) return 0;
+        numerator * 10000 / denominator
+    }
+
+    /// Convert USD price (8 decimals) to Q64.64 sqrt price
+    public fun price_to_sqrt_q64(price_usd: u64): u128 {
+        // sqrt(price) * 2^64
+        let p128 = (price_usd as u128);
+        sqrt_u128(p128) << 32   // approximation — refine with Hyperion's exact formula
+    }
+}
+```
+
+---
+
+## 5. Strategy Interface (`strategy.move`)
+
+The strategy module is separated so v2 can accept external curator strategies without touching `vault.move`.
+
+> **v1 scope boundary — Cursor must not exceed this:**
+> - ONE strategy, ONE Hyperion CLMM pool, ONE price range at a time
+> - Do NOT implement `vector<Allocation>`, multi-pool weights, sub-vaults, or withdrawal queues
+> - Do NOT add lending protocol integrations
+> - The interface below is intentionally minimal — vault calls only these three functions
+> - Everything else is v2/v3 and will be added later via Move upgrade
+
+```move
+module yab::strategy {
+    /// Describes a price range for a Hyperion CL position
+    struct Range has copy, drop, store {
+        tick_lower: i32,   // use aptos_std::i32 or define locally
+        tick_upper: i32,
+        sqrt_price_low:  u128,
+        sqrt_price_high: u128,
+    }
+
+    struct StrategyParams has key {
+        /// half-width of range in BPS of current price (e.g. 500 = ±5%)
+        range_half_width_bps: u64,
+        /// minimum blocks since last rebalance (anti-spam)
+        min_rebalance_interval_secs: u64,
+        /// deviation from center that triggers rebalance (BPS)
+        rebalance_trigger_bps: u64,
+        /// max slippage on internal swaps (BPS)
+        max_swap_slippage_bps: u64,
+        /// dust threshold: auto-reinvest Free Reserves if > X BPS of TVL
+        dust_reinvest_threshold_bps: u64,
+    }
+
+    // ── Default strategy (conservative BTC/USDC ±5%) ─────────────────────
+
+    public fun default_params(): StrategyParams {
+        StrategyParams {
+            range_half_width_bps:        500,    // ±5%
+            min_rebalance_interval_secs: 1800,   // 30 min minimum
+            rebalance_trigger_bps:       400,    // trigger at ±4% from center
+            max_swap_slippage_bps:       30,     // 0.3% max slippage
+            dust_reinvest_threshold_bps: 10,     // reinvest if > 0.1% TVL
+        }
+    }
+
+    /// Compute target range centered on current price
+    public fun get_target_range(
+        current_price_usd: u64,
+        params: &StrategyParams,
+    ): Range {
+        use yab::math;
+        let half = (current_price_usd as u128) * (params.range_half_width_bps as u128) / 10000;
+        let price_low  = (current_price_usd as u128) - half;
+        let price_high = (current_price_usd as u128) + half;
+        Range {
+            tick_lower:       0,   // TODO: convert price_low to Hyperion tick
+            tick_upper:       0,   // TODO: convert price_high to Hyperion tick
+            sqrt_price_low:  math::price_to_sqrt_q64(price_low  as u64),
+            sqrt_price_high: math::price_to_sqrt_q64(price_high as u64),
+        }
+    }
+
+    /// True if current price is outside rebalance trigger band
+    public fun should_rebalance(
+        current_price: u64,
+        center_price:  u64,
+        params: &StrategyParams,
+    ): bool {
+        let deviation = if (current_price > center_price) {
+            (current_price - center_price) * 10000 / center_price
+        } else {
+            (center_price - current_price) * 10000 / center_price
+        };
+        deviation >= params.rebalance_trigger_bps
+    }
+}
+```
+
+> **For Cursor:** The `tick_lower`/`tick_upper` conversion from price to Hyperion tick must use the same tick spacing as the target Hyperion pool. Check `HYPERION_PACKAGE_ADDR::pool::tick_spacing()` and implement `price_to_tick()` using `ln(price) / ln(1.0001)` with integer approximation.
+
+---
+
+## 6. Vault Module (`vault.move`)
+
+Core vault. YAB token is issued as a **Fungible Asset (FA standard)** — not legacy Coin. Use `aptos_framework::fungible_asset` and `primary_fungible_store`.
+
+### 6.1 Structs
+
+```move
+module yab::vault {
+    use std::signer;
+    use std::option;
+    use aptos_framework::object::{Self, Object, ConstructorRef};
+    use aptos_framework::fungible_asset::{Self, MintRef, BurnRef, TransferRef, FungibleAsset, Metadata};
+    use aptos_framework::primary_fungible_store;
+    use aptos_framework::timestamp;
+    use yab::oracle;
+    use yab::strategy::{Self, StrategyParams, Range};
+    use yab::math;
+    use yab::errors;
+    // TODO: use hyperion::clmm  (import your Hyperion package here)
+
+    // ── FA Refs (stored at vault object) ──────────────────────────────────
+    #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
+    struct YabRefs has key {
+        mint_ref:     MintRef,
+        burn_ref:     BurnRef,
+        transfer_ref: TransferRef,
+    }
+
+    // ── Vault State ───────────────────────────────────────────────────────
+    #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
+    struct VaultState has key {
+        /// admin (multisig address)
+        admin: address,
+        /// operator (off-chain bot, can call rebalance/claim)
+        operator: address,
+        /// treasury (receives performance fee as YAB shares)
+        treasury: address,
+
+        // ── Hyperion position ─────────────────────────────────────────────
+        position_id: u64,          // Hyperion NFT position ID (0 = no open position)
+        position_btc:  u64,        // last known BTC in position (updated on every operation)
+        position_usdc: u64,        // last known USDC in position
+
+        // ── Free Reserves ─────────────────────────────────────────────────
+        free_btc:  u64,
+        free_usdc: u64,
+
+        // ── Range tracking ────────────────────────────────────────────────
+        center_price:         u64,  // price at last open/rebalance (USD, 8 dec)
+        last_rebalance_ts:    u64,
+        last_recorded_price:  u64,  // for oracle deviation guard
+
+        // ── Fee ───────────────────────────────────────────────────────────
+        performance_fee_bps: u64,   // default 1000 = 10%
+    }
+
+    // ── Per-user deposit checkpoint (for performance fee) ─────────────────
+    struct UserCheckpoint has key {
+        entry_price: u64,    // YAB price at deposit (BTC units, 8 dec precision)
+    }
+
+    // ── Strategy config ───────────────────────────────────────────────────
+    #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
+    struct VaultStrategy has key {
+        params: StrategyParams,
+    }
+
+    // ── Events ────────────────────────────────────────────────────────────
+    #[event] struct Deposited     has drop, store { user: address, btc_in: u64,    shares_minted: u64 }
+    #[event] struct Withdrawn     has drop, store { user: address, shares_burned: u64, btc_out: u64 }
+    #[event] struct Rebalanced    has drop, store { old_center: u64, new_center: u64, timestamp: u64 }
+    #[event] struct RewardsClaimed has drop, store { btc_received: u64, timestamp: u64 }
+```
+
+### 6.2 Initialization
+
+```move
+    /// Called once by deployer. Creates vault object + mints YAB FA metadata.
+    public entry fun initialize(
+        admin: &signer,
+        treasury: address,
+        operator: address,
+    ) {
+        let admin_addr = signer::address_of(admin);
+
+        // Create named object — deterministic address, owned by module
+        let constructor = object::create_named_object(admin, b"YAB_VAULT_V1");
+        let vault_signer = object::generate_signer(&constructor);
+
+        // Create YAB as Fungible Asset on this object
+        primary_fungible_store::create_primary_store_enabled_fungible_asset(
+            &constructor,
+            option::none(),        // no max supply
+            utf8(b"Yield AI Bitcoin"),
+            utf8(b"YAB"),
+            8,                     // 8 decimals (same as BTC)
+            utf8(b""),             // icon uri — fill before mainnet
+            utf8(b""),             // project uri
+        );
+
+        // Store refs for mint/burn
+        move_to(&vault_signer, YabRefs {
+            mint_ref:     fungible_asset::generate_mint_ref(&constructor),
+            burn_ref:     fungible_asset::generate_burn_ref(&constructor),
+            transfer_ref: fungible_asset::generate_transfer_ref(&constructor),
+        });
+
+        move_to(&vault_signer, VaultState {
+            admin,
+            operator,
+            treasury,
+            position_id:          0,
+            position_btc:         0,
+            position_usdc:        0,
+            free_btc:             0,
+            free_usdc:            0,
+            center_price:         0,
+            last_rebalance_ts:    0,
+            last_recorded_price:  0,
+            performance_fee_bps:  1000,  // 10%
+        });
+
+        move_to(&vault_signer, VaultStrategy {
+            params: strategy::default_params(),
+        });
+    }
+```
+
+### 6.2.1 Bootstrap — первый депозит и открытие позиции
+
+**Это особый случай.** После `initialize()` vault пустой:
+- `yab_supply = 0`
+- `position = none`
+- `free_btc = 0`
+
+Обычный `deposit()` не подходит для первого раза потому что нет открытой позиции в Hyperion — некуда добавлять ликвидность. Нужна отдельная функция `bootstrap()` которую вызывает только admin один раз.
+
+```move
+/// Called ONCE by admin after initialize() to seed the vault and open the first position.
+/// This is the first YAB mint — admin becomes the first LP.
+public entry fun bootstrap(
+    admin:      &signer,
+    vault_addr: address,
+    btc_in:     u64,        // initial BTC seed amount
+    tick_lower: u32,        // initial range lower tick
+    tick_upper: u32,        // initial range upper tick
+    fee_tier:   u8,         // Hyperion pool fee tier
+) acquires VaultState, YabRefs, VaultStrategy {
+    let admin_addr = signer::address_of(admin);
+    let state = borrow_global_mut<VaultState>(vault_addr);
+
+    // Only admin, only once
+    assert!(admin_addr == state.admin,   errors::E_NOT_ADMIN);
+    assert!(state.position_obj == @0x0,  errors::E_ALREADY_BOOTSTRAPPED); // add this error code
+
+    // 1. Get oracle price — sets last_recorded_price baseline
+    let btc_price = oracle::get_safe_price(0); // 0 = skip deviation check on first call
+    state.last_recorded_price = btc_price;
+    state.center_price        = btc_price;
+
+    // 2. Pull BTC from admin
+    let vault_signer = account::create_signer_with_capability(&state.signer_cap);
+    let btc_fa = primary_fungible_store::withdraw(admin, btc_metadata(), btc_in);
+
+    // 3. Compute optimal split for the given range
+    let strategy = borrow_global<VaultStrategy>(vault_addr);
+    let sqrt_current = math::price_to_sqrt_q64(btc_price);
+    let sqrt_low     = math::price_to_sqrt_q64(tick_to_price(tick_lower));
+    let sqrt_high    = math::price_to_sqrt_q64(tick_to_price(tick_upper));
+    let btc_ratio    = math::btc_ratio_bps(sqrt_current, sqrt_low, sqrt_high);
+
+    let btc_to_add  = btc_in * btc_ratio / 10000;
+    let btc_to_swap = btc_in - btc_to_add;
+
+    // 4. Swap btc_to_swap → USDC via Hyperion router
+    //    min_out from oracle, not spot price
+    let min_usdc = btc_to_swap * btc_price / 100_000_000
+                   * (10000 - strategy.params.max_swap_slippage_bps) / 10000;
+    router_v3::exact_input_swap_entry(
+        &vault_signer, fee_tier,
+        btc_to_swap, min_usdc, 0,
+        btc_metadata(), usdc_metadata(),
+        vault_addr, MAX_DEADLINE,
+    );
+
+    // 5. Open empty position in Hyperion
+    let position = pool_v3::open_position(
+        &vault_signer,
+        btc_metadata(), usdc_metadata(),
+        fee_tier, tick_lower, tick_upper,
+    );
+
+    // 6. Add liquidity — compute liquidity_delta from amounts
+    //    Use Hyperion's liquidity math or compute off-chain and pass as argument
+    let (actual_btc, actual_usdc, leftover_btc_fa, leftover_usdc_fa) =
+        pool_v3::add_liquidity(&vault_signer, position, liquidity_delta, btc_fa, usdc_fa);
+
+    // 7. Save position object address and update state
+    state.position_obj  = object::object_address(&position);
+    state.position_btc  = actual_btc;
+    state.position_usdc = actual_usdc;
+    state.free_btc      = fungible_asset::amount(&leftover_btc_fa);
+    state.free_usdc     = fungible_asset::amount(&leftover_usdc_fa);
+    // deposit leftover FAs into vault's primary store
+    primary_fungible_store::deposit(vault_addr, leftover_btc_fa);
+    primary_fungible_store::deposit(vault_addr, leftover_usdc_fa);
+
+    // 8. Mint initial YAB shares to admin
+    //    Initial price = 1 BTC per YAB (1e8 units)
+    //    shares = btc_in / initial_price = btc_in (since price = 1.0)
+    let initial_shares = btc_in; // 1:1 at bootstrap, 8 decimals match
+    let refs = borrow_global<YabRefs>(vault_addr);
+    let yab_fa = fungible_asset::mint(&refs.mint_ref, initial_shares);
+    primary_fungible_store::deposit(admin_addr, yab_fa);
+
+    // 9. Save admin's entry checkpoint
+    move_to(admin, UserCheckpoint { entry_price: 100_000_000 }); // 1.0 BTC per YAB
+
+    state.last_rebalance_ts = timestamp::now_seconds();
+}
+```
+
+**Последовательность вызовов при запуске:**
+```bash
+# 1. Деплой
+aptos move publish --profile admin
+
+# 2. Инициализация vault (создаёт объект + FA метаданные YAB)
+aptos move run --function-id <ADDR>::vault::initialize \
+  --args address:<TREASURY> address:<OPERATOR>
+
+# 3. Bootstrap — первый депозит, открытие позиции, первый минт YAB
+aptos move run --function-id <ADDR>::vault::bootstrap \
+  --args address:<VAULT_ADDR> u64:100000000 u32:<TICK_LOWER> u32:<TICK_UPPER> u8:<FEE_TIER>
+#              ^ 1 BTC в satoshi-единицах (8 decimals)
+
+# 4. Обычные пользователи — уже через deposit()
+```
+
+**Ключевые отличия bootstrap от deposit:**
+
+| | `bootstrap()` | `deposit()` |
+|---|---|---|
+| Кто вызывает | только admin | любой пользователь |
+| Позиция | создаёт новую | добавляет в существующую |
+| NAV при расчёте | начальная цена 1.0 BTC | текущий NAV |
+| Тики диапазона | задаёт явно | берёт из стратегии |
+| Вызывается | один раз | многократно |
+
+### 6.3 NAV Calculation
+
+```move
+    /// Total assets in BTC (8 decimals).
+    /// NEVER use spot price from Hyperion pool — always oracle.
+    fun get_total_assets(state: &VaultState, btc_price: u64): u64 {
+        let pos_btc_equiv  = state.position_btc + state.position_usdc * 100_000_000 / btc_price;
+        let free_btc_equiv = state.free_btc     + state.free_usdc     * 100_000_000 / btc_price;
+        pos_btc_equiv + free_btc_equiv
+        // NOTE: reward tokens (RION etc.) are NOT included — they are
+        //       converted to BTC immediately on claim (see claim_rewards)
+    }
+
+    /// YAB price in BTC (8 decimals precision). Returns 0 if supply is 0.
+    fun get_yab_price(state: &VaultState, vault_addr: address, btc_price: u64): u64 {
+        let yab_metadata = object::address_to_object<Metadata>(vault_addr);
+        let supply = fungible_asset::supply(yab_metadata);
+        if (supply == 0) return 100_000_000; // initial price = 1 BTC per YAB (1e8)
+        let total = get_total_assets(state, btc_price);
+        total * 100_000_000 / (supply as u64)
+    }
+```
+
+### 6.4 Deposit
+
+```move
+    public entry fun deposit(
+        user:    &signer,
+        btc_in:  u64,          // amount of BTC (FA) to deposit
+        vault_addr: address,
+    ) acquires VaultState, YabRefs, VaultStrategy {
+        assert!(btc_in > 0, errors::E_ZERO_AMOUNT);
+        let user_addr = signer::address_of(user);
+        let state = borrow_global_mut<VaultState>(vault_addr);
+
+        // 1. Oracle price — fixes NAV before any state change
+        let btc_price = oracle::get_safe_price(state.last_recorded_price);
+        state.last_recorded_price = btc_price;
+        let yab_price = get_yab_price(state, vault_addr, btc_price);
+
+        // 2. Pull BTC from user via primary FA store
+        // TODO: primary_fungible_store::withdraw(user, btc_metadata, btc_in)
+        //       Replace btc_metadata with the FA Object<Metadata> for WBTC on Aptos
+
+        // 3. Use Free Reserves first, then new funds
+        let available_btc  = state.free_btc  + btc_in;
+        let available_usdc = state.free_usdc;
+
+        // 4. Optimal split for current range
+        let strategy = borrow_global<VaultStrategy>(vault_addr);
+        let range = strategy::get_target_range(btc_price, &strategy.params);
+        let btc_ratio = math::btc_ratio_bps(
+            math::price_to_sqrt_q64(btc_price),
+            range.sqrt_price_low,
+            range.sqrt_price_high,
+        );
+        let btc_to_add  = available_btc * btc_ratio / 10000;
+        let btc_to_swap = available_btc - btc_to_add;
+
+        // 5. Swap excess BTC → USDC via Hyperion
+        // TODO: let usdc_received = hyperion::swap_exact_input(btc_to_swap, min_out, ...)
+        //       min_out = btc_to_swap * btc_price * (10000 - slippage_bps) / 10000 / 1e8
+        let usdc_to_add = available_usdc; // + usdc_received (after swap)
+
+        // 6. Add liquidity to Hyperion
+        // TODO: hyperion::add_liquidity(state.position_id, btc_to_add, usdc_to_add, range)
+        //       Update state.position_btc and state.position_usdc with actual amounts used
+
+        // 7. Leftover → Free Reserves
+        state.free_btc  = 0; // btc_to_add used from available_btc
+        state.free_usdc = 0; // usdc_to_add used
+
+        // 8. Mint YAB shares AFTER all state changes
+        let shares = btc_in * 100_000_000 / yab_price;
+        let refs = borrow_global<YabRefs>(vault_addr);
+        let yab_fa = fungible_asset::mint(&refs.mint_ref, shares);
+        primary_fungible_store::deposit(user_addr, yab_fa);
+
+        // 9. Save entry checkpoint for performance fee
+        if (!exists<UserCheckpoint>(user_addr)) {
+            move_to(user, UserCheckpoint { entry_price: yab_price });
+        } else {
+            // weighted average entry price on top-up
+            // simplified: update to current (conservative — user gets less fee credit)
+            let checkpoint = borrow_global_mut<UserCheckpoint>(user_addr);
+            checkpoint.entry_price = yab_price;
+        };
+
+        aptos_framework::event::emit(Deposited { user: user_addr, btc_in, shares_minted: shares });
+    }
+```
+
+### 6.5 Withdraw
+
+```move
+    public entry fun withdraw(
+        user:       &signer,
+        shares_in:  u64,
+        vault_addr: address,
+    ) acquires VaultState, YabRefs, UserCheckpoint {
+        assert!(shares_in > 0, errors::E_ZERO_AMOUNT);
+        let user_addr = signer::address_of(user);
+        let state = borrow_global_mut<VaultState>(vault_addr);
+
+        let btc_price = oracle::get_safe_price(state.last_recorded_price);
+        state.last_recorded_price = btc_price;
+        let yab_price = get_yab_price(state, vault_addr, btc_price);
+
+        // 1. How much BTC this user is owed
+        let btc_owed = shares_in * yab_price / 100_000_000;
+
+        // 2. Performance fee — only if user is in profit
+        let fee_shares: u64 = 0;
+        if (exists<UserCheckpoint>(user_addr)) {
+            let checkpoint = borrow_global<UserCheckpoint>(user_addr);
+            if (yab_price > checkpoint.entry_price) {
+                let profit_per_share = yab_price - checkpoint.entry_price;
+                let total_profit = profit_per_share * shares_in / 100_000_000;
+                let fee_btc = total_profit * state.performance_fee_bps / 10000;
+                fee_shares = fee_btc * 100_000_000 / yab_price;
+                btc_owed = btc_owed - fee_btc;
+
+                // Mint fee shares to treasury
+                let refs = borrow_global<YabRefs>(vault_addr);
+                let fee_fa = fungible_asset::mint(&refs.mint_ref, fee_shares);
+                primary_fungible_store::deposit(state.treasury, fee_fa);
+            }
+        };
+
+        // 3. Fulfill from Free Reserves first
+        let btc_out = 0u64;
+        if (state.free_btc >= btc_owed) {
+            btc_out = btc_owed;
+            state.free_btc = state.free_btc - btc_owed;
+        } else {
+            btc_out = state.free_btc;
+            state.free_btc = 0;
+            let remainder = btc_owed - btc_out;
+
+            // 4. Close proportional part of Hyperion position
+            // TODO: let (btc_from_pos, usdc_from_pos) = hyperion::remove_liquidity_proportional(
+            //           state.position_id, remainder, get_total_assets(state, btc_price))
+            // TODO: swap usdc_from_pos -> BTC, add to btc_out
+        };
+
+        // 5. Transfer BTC to user
+        // TODO: primary_fungible_store::deposit(user_addr, btc_fa_asset)
+
+        // 6. Burn YAB shares
+        let refs = borrow_global<YabRefs>(vault_addr);
+        let user_yab = primary_fungible_store::withdraw(
+            user,
+            object::address_to_object<Metadata>(vault_addr),
+            shares_in
+        );
+        fungible_asset::burn(&refs.burn_ref, user_yab);
+
+        aptos_framework::event::emit(Withdrawn { user: user_addr, shares_burned: shares_in, btc_out });
+    }
+```
+
+### 6.6 Claim Rewards
+
+```move
+    /// Operator calls this off-chain to harvest Hyperion trading fees and
+    /// any gauge rewards (RION etc.), converting everything to BTC.
+    public entry fun claim_rewards(
+        operator: &signer,
+        vault_addr: address,
+    ) acquires VaultState {
+        let op_addr = signer::address_of(operator);
+        let state   = borrow_global_mut<VaultState>(vault_addr);
+        assert!(op_addr == state.operator || op_addr == state.admin, errors::E_NOT_OPERATOR);
+
+        let btc_price = oracle::get_safe_price(state.last_recorded_price);
+        state.last_recorded_price = btc_price;
+
+        // 1. Claim trading fees from Hyperion position
+        // TODO: let (fee_btc, fee_usdc) = hyperion::collect_fees(state.position_id)
+        // TODO: swap fee_usdc -> BTC with slippage guard:
+        //       min_btc = fee_usdc * 1e8 * (10000 - slippage) / btc_price / 10000
+
+        // 2. Claim gauge rewards (RION, etc.) — convert immediately, never hold
+        // TODO: let rion_amount = hyperion::claim_gauge_rewards(state.position_id)
+        // TODO: if rion_amount > RION_AUTO_CONVERT_THRESHOLD {
+        //           let btc_from_rion = hyperion::swap_rion_to_btc(rion_amount, min_out)
+        //           state.free_btc += btc_from_rion
+        //       }
+        // IMPORTANT: RION must NOT be added to NAV — convert or discard
+
+        // 3. Add converted BTC to Free Reserves
+        // state.free_btc += fee_btc_total;
+
+        let btc_received: u64 = 0; // replace with actual total
+        aptos_framework::event::emit(RewardsClaimed { btc_received, timestamp: timestamp::now_seconds() });
+    }
+```
+
+### 6.7 Rebalance (Atomic — no pause)
+
+```move
+    /// Operator calls when price exits trigger band.
+    /// Entire flow is one transaction — no MEV window, no deposit/withdraw pause.
+    public entry fun rebalance(
+        operator: &signer,
+        vault_addr: address,
+    ) acquires VaultState, VaultStrategy {
+        let op_addr = signer::address_of(operator);
+        let state   = borrow_global_mut<VaultState>(vault_addr);
+        assert!(op_addr == state.operator || op_addr == state.admin, errors::E_NOT_OPERATOR);
+
+        // 1. Time guard — prevent rebalance spam
+        let strategy = borrow_global<VaultStrategy>(vault_addr);
+        let now = timestamp::now_seconds();
+        assert!(
+            now >= state.last_rebalance_ts + strategy.params.min_rebalance_interval_secs,
+            errors::E_REBALANCE_TOO_EARLY,
+        );
+
+        // 2. Oracle — circuit breaker applies
+        let btc_price = oracle::get_safe_price(state.last_recorded_price);
+        state.last_recorded_price = btc_price;
+
+        // 3. Check if rebalance is actually needed
+        assert!(
+            strategy::should_rebalance(btc_price, state.center_price, &strategy.params),
+            errors::E_REBALANCE_NOT_NEEDED,
+        );
+
+        // ── ATOMIC BLOCK START ────────────────────────────────────────────
+        // Everything below is one transaction. Any abort = full rollback.
+
+        // 4. Close existing Hyperion position, collect all fees
+        // TODO: let (btc_from_pos, usdc_from_pos) = hyperion::close_position(state.position_id)
+        // TODO: let (fee_btc, fee_usdc) = hyperion::collect_fees(state.position_id)
+        //       merge into free reserves
+
+        // 5. Convert all USDC to proportional BTC for new range
+        let new_range = strategy::get_target_range(btc_price, &strategy.params);
+        let btc_ratio = math::btc_ratio_bps(
+            math::price_to_sqrt_q64(btc_price),
+            new_range.sqrt_price_low,
+            new_range.sqrt_price_high,
+        );
+        // total_btc_equiv = state.free_btc + state.free_usdc converted
+        // btc_to_add = total_btc_equiv * btc_ratio / 10000
+        // swap delta to achieve target ratio
+        // min_out on every swap = oracle_price * amount * (10000 - max_slippage) / 10000
+
+        // 6. Open new Hyperion position
+        // TODO: let new_position_id = hyperion::open_position(btc_to_add, usdc_to_add, new_range)
+        // state.position_id   = new_position_id
+        // state.center_price  = btc_price
+        // state.last_rebalance_ts = now
+        // update state.free_btc / free_usdc with leftovers
+
+        // ── ATOMIC BLOCK END ──────────────────────────────────────────────
+
+        let old_center = state.center_price;
+        state.center_price = btc_price;
+        state.last_rebalance_ts = now;
+
+        aptos_framework::event::emit(Rebalanced { old_center, new_center: btc_price, timestamp: now });
+    }
+```
+
+### 6.8 Governance Functions
+
+```move
+    /// Transfer admin role (timelock must be enforced off-chain or via separate timelock module)
+    public entry fun set_operator(admin: &signer, vault_addr: address, new_operator: address)
+    acquires VaultState {
+        let state = borrow_global_mut<VaultState>(vault_addr);
+        assert!(signer::address_of(admin) == state.admin, errors::E_NOT_ADMIN);
+        state.operator = new_operator;
+    }
+
+    public entry fun set_performance_fee(admin: &signer, vault_addr: address, fee_bps: u64)
+    acquires VaultState {
+        let state = borrow_global_mut<VaultState>(vault_addr);
+        assert!(signer::address_of(admin) == state.admin, errors::E_NOT_ADMIN);
+        assert!(fee_bps <= 2000, errors::E_FEE_TOO_HIGH); // max 20%
+        state.performance_fee_bps = fee_bps;
+    }
+
+    public entry fun set_strategy_params(
+        admin: &signer,
+        vault_addr: address,
+        range_half_width_bps: u64,
+        rebalance_trigger_bps: u64,
+        max_swap_slippage_bps: u64,
+    ) acquires VaultState, VaultStrategy {
+        let state = borrow_global<VaultState>(vault_addr);
+        assert!(signer::address_of(admin) == state.admin, errors::E_NOT_ADMIN);
+        assert!(range_half_width_bps >= 100, errors::E_RANGE_TOO_NARROW); // min ±1%
+        let strategy = borrow_global_mut<VaultStrategy>(vault_addr);
+        strategy.params.range_half_width_bps    = range_half_width_bps;
+        strategy.params.rebalance_trigger_bps   = rebalance_trigger_bps;
+        strategy.params.max_swap_slippage_bps   = max_swap_slippage_bps;
+    }
+
+    // View functions
+    #[view] public fun get_yab_price_view(vault_addr: address): u64 acquires VaultState { ... }
+    #[view] public fun get_total_assets_view(vault_addr: address): u64 acquires VaultState { ... }
+    #[view] public fun get_vault_state(vault_addr: address): (u64, u64, u64, u64) acquires VaultState { ... }
+} // end module
+```
+
+---
+
+## 7. Hyperion Interface — Real Function Signatures
+
+All functions are in the `hyperion-interface` package (`github.com/Hyperfluid/hyperfluid-interface`).
+Import modules: `pool_v3`, `router_v3`, `position_v3`.
+
+### Open position (empty, no liquidity yet)
+```move
+// module: pool_v3
+public fun open_position(
+    user:       &signer,
+    token_a:    Object<Metadata>,   // WBTC metadata object
+    token_b:    Object<Metadata>,   // USDC metadata object
+    fee_tier:   u8,                 // fee tier of the pool
+    tick_lower: u32,
+    tick_upper: u32,
+): Object<position_v3::Info>
+```
+
+### Add liquidity
+```move
+// module: pool_v3
+public fun add_liquidity(
+    user:            &signer,
+    position:        Object<position_v3::Info>,
+    liquidity_delta: u128,          // liquidity units to add
+    fa_a:            FungibleAsset, // WBTC to deposit
+    fa_b:            FungibleAsset, // USDC to deposit
+): (u64, u64, FungibleAsset, FungibleAsset)
+// returns: (actual_a_used, actual_b_used, leftover_fa_a, leftover_fa_b)
+// leftover → state.free_btc / state.free_usdc
+```
+
+### Remove liquidity
+```move
+// module: pool_v3
+public fun remove_liquidity(
+    user:            &signer,
+    position:        Object<position_v3::Info>,
+    liquidity_delta: u128,
+): (Option<FungibleAsset>, Option<FungibleAsset>)
+// returns: (Option<btc_fa>, Option<usdc_fa>)
+// to close fully: pass position's total liquidity as liquidity_delta
+```
+
+### Collect trading fees
+```move
+// module: pool_v3
+public fun claim_fees(
+    user:     &signer,
+    position: Object<position_v3::Info>,
+): (FungibleAsset, FungibleAsset)
+// returns: (fee_btc_fa, fee_usdc_fa)
+```
+
+### Collect gauge rewards (RION etc.)
+```move
+// module: pool_v3
+public fun claim_rewards(
+    user:     &signer,
+    position: Object<position_v3::Info>,
+): vector<FungibleAsset>
+// returns vector — iterate and convert each token to BTC immediately
+// NEVER add reward tokens to NAV directly
+```
+
+### Swap (exact input)
+```move
+// module: router_v3
+public entry fun exact_input_swap_entry(
+    user:              &signer,
+    fee_tier:          u8,
+    amount_in:         u64,
+    amount_out_min:    u64,         // slippage guard — MUST come from oracle
+    sqrt_price_limit:  u128,        // x64 fixed-point price impact limit, 0 = no limit
+    from_token:        Object<Metadata>,
+    to_token:          Object<Metadata>,
+    recipient:         address,
+    _deadline:         u64
+)
+```
+
+> **Slippage rule (mandatory on every swap):**
+> ```
+> amount_out_min = oracle_price * amount_in * (10000 - max_slippage_bps) / 10000
+> ```
+> Never use pool spot price — always Pyth oracle. This is the main MEV defence.
+
+### Vault signer pattern
+Hyperion functions take `user: &signer`. The vault contract must hold a `SignerCapability`
+(from `aptos_framework::account::create_resource_account`) so it can pass its own signer
+to Hyperion on behalf of all depositors. Store `SignerCapability` in `VaultState` at init.
+
+```move
+// in VaultState:
+signer_cap: SignerCapability,
+
+// usage inside vault functions:
+let vault_signer = account::create_signer_with_capability(&state.signer_cap);
+let position = pool_v3::open_position(&vault_signer, btc_meta, usdc_meta, fee_tier, tick_lower, tick_upper);
+```
+
+---
+
+## 8. Tests to Write (`tests/`)
+
+```move
+// vault_tests.move
+#[test] fun test_deposit_mints_correct_shares()
+#[test] fun test_withdraw_returns_correct_btc()
+#[test] fun test_performance_fee_only_on_profit()
+#[test] fun test_no_fee_when_at_loss()
+#[test] fun test_free_reserves_used_first_on_withdraw()
+#[test] fun test_deposit_uses_free_reserves()
+
+// oracle_tests.move
+#[test] fun test_stale_price_aborts()
+#[test] fun test_price_spike_aborts()
+#[test] fun test_low_confidence_aborts()
+#[test] fun test_first_call_skips_deviation_check()  // last_recorded=0
+
+// math_tests.move
+#[test] fun test_btc_ratio_at_center_is_50pct()
+#[test] fun test_btc_ratio_at_upper_is_zero()
+#[test] fun test_btc_ratio_at_lower_is_100pct()
+#[test] fun test_sqrt_u128_known_values()
+```
+
+---
+
+## 9. Security Checklist (Cursor: verify before finishing)
+
+- [ ] Every price read uses `oracle::get_safe_price()` — no direct Pyth calls
+- [ ] Every swap has `min_out` computed from oracle, not spot price
+- [ ] NAV is calculated BEFORE any state mutation in deposit/withdraw
+- [ ] RION and reward tokens are **never** added to `TotalAssets` directly
+- [ ] `rebalance()` has time guard (`min_rebalance_interval_secs`)
+- [ ] Performance fee minted to treasury, not transferred from user
+- [ ] All Hyperion calls inside `rebalance()` are in one transaction scope
+- [ ] `set_strategy_params()` enforces `range_half_width_bps >= 100`
+- [ ] `set_performance_fee()` enforces `fee_bps <= 2000`
+- [ ] FA metadata validated on every deposit (prevent wrong token deposits)
+- [ ] `#[view]` functions are read-only, no state mutation
+- [ ] Unit tests cover the fee=0 case (user at loss)
+
+---
+
+## 10. Deploy Sequence
+
+```bash
+# 1. Compile
+aptos move compile --named-addresses yab=<YOUR_ADDR>,hyperion=HYPERION_PACKAGE_ADDR
+
+# 2. Run tests
+aptos move test
+
+# 3. Deploy to testnet first
+aptos move publish --profile testnet
+
+# 4. Initialize vault
+aptos move run \
+  --function-id <YOUR_ADDR>::vault::initialize \
+  --args address:<TREASURY_ADDR> address:<OPERATOR_ADDR> \
+  --profile testnet
+
+# 5. Verify on explorer
+# https://explorer.aptoslabs.com/account/<YOUR_ADDR>/modules
+```
+
+---
+
+## Notes for Cursor
+
+1. **FA standard only** — no legacy `aptos_framework::coin`. YAB token, WBTC, and USDC all use `fungible_asset` + `primary_fungible_store`.
+2. **Move 2 syntax** — use `has drop, store` on event structs, `#[event]` attribute, `#[view]` on read functions.
+3. **Object model** — VaultState lives inside a named object, not a resource on an account. Use `object::create_named_object` for deterministic address.
+4. **No pause mechanism** — rebalance is atomic, no `paused` flag needed.
+5. **Vault signer via SignerCapability** — Hyperion's `pool_v3` and `router_v3` require `&signer`. The vault creates a resource account at `initialize()` and stores its `SignerCapability`. All Hyperion calls use `account::create_signer_with_capability(&state.signer_cap)`.
+6. **Position is `Object<position_v3::Info>`** — not a `u64` ID. Store the object address in `VaultState` and reconstruct with `object::address_to_object<position_v3::Info>(addr)`.
+7. **`add_liquidity` returns leftovers** — always capture `(_, _, leftover_btc_fa, leftover_usdc_fa)` and deposit them back into `state.free_btc` / `state.free_usdc`. Never discard them.
+8. **`claim_rewards` returns `vector<FungibleAsset>`** — iterate the vector, swap each non-BTC asset to BTC via `router_v3::exact_input_swap_entry`. Never hold RION in vault state.
+9. **Tick math** — implement `price_to_tick(price_usd) -> u32` using `ln(price) / ln(1.0001)`. Check the fee tier tick spacing from the Hyperion pool before opening — tick_lower and tick_upper must be multiples of tick_spacing.
+10. **aptos-agent-skills** — after cloning, check for `move-contract`, `fungible-asset`, `object-model`, and `pyth-oracle` skill files. Follow their patterns for idiomatic Move 2.
