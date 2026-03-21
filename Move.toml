@@ -5,16 +5,18 @@ upgrade_policy = "compatible"
 authors = []
 
 # Named addresses for this package and dependencies (see dependency `dex` / Hyperion interface).
+# All named addresses must be resolved here for `aptos move compile` (no "_"), OR use [dev-addresses] + `aptos move compile --dev`.
+#
+# Pyth `pyth`, `wormhole`, `deployer` — same on Aptos mainnet and testnet (official docs):
+# https://docs.pyth.network/price-feeds/contract-addresses/aptos
+#
+# `dex_contract` — published Hyperion DEX package (`.cursorrules`): testnet vs mainnet.
 [addresses]
-yab = "_"
+yab = "0x8a233984c022b893a3b84f031abbac21ac5e9dd58159bce14b8ed0a155baaffb"
 pyth = "0x7e783b349d3e89cf5931af376ebeadbfab855b3fa239b7ada8f5a92fbea6b387"
 wormhole = "0x5bc11445584a763c1fa7ed39081f1b920954da14e04b32440cba863d03e19625"
-# Hyperion DEX package account (resolves `dex_contract::` in hyperfluid-interface). Confirm for your network.
-# Documented in .cursorrules:
-#   mainnet: 0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c
-#   testnet: 0x69faed94da99abb7316cb3ec2eeaa1b961a47349fad8c584f67a930b0d14fec7
-dex_contract = "_"
-deployer = "_"
+dex_contract = "0x69faed94da99abb7316cb3ec2eeaa1b961a47349fad8c584f67a930b0d14fec7"
+deployer = "0xb31e712b26fd295357355f6845e77c888298636609e93bc9b05f0f604049f434"
 
 [dev-addresses]
 
