@@ -98,6 +98,18 @@ module yab::vault {
     const INITIAL_YAB_PRICE: u64 = 100_000_000; // 1.0 with 8 decimals
     const DEADLINE_SECS: u64 = 1800;
 
+    /// Pyth on-chain read, or a fixed price for `aptos move test` E2E paths only (`#[test_only]` callers pass `some(price)`).
+    fun resolve_oracle_price(last_recorded: u64, price_override: option::Option<u64>): u64 {
+        if (option::is_some(&price_override)) {
+            let p = option::destroy_some(price_override);
+            let now = timestamp::now_seconds();
+            oracle::validate_cached_price(last_recorded, now, now, p, 1);
+            p
+        } else {
+            oracle::get_safe_price(last_recorded)
+        }
+    }
+
     /// Total vault assets in token-A (BTC) equivalent (8 decimals). Oracle `btc_price` is BTC/USD (8 decimals).
     fun get_total_assets(state: &VaultState, btc_price: u64): u64 {
         let pos_btc_equiv = (state.position_btc as u128)
@@ -169,7 +181,7 @@ module yab::vault {
             } else if (maddr == object::object_address(&meta_b)) {
                 let amt = fungible_asset::amount(&fa);
                 if (amt > 0) {
-                    let (_o0, fa_mid, fa_out) = pool_v3::swap(pool, false, true, amt, fa, 0);
+                    let (_o0, fa_mid, fa_out) = pool_v3::swap(pool, false, true, amt, fa, 0, meta_a);
                     if (fungible_asset::amount(&fa_mid) > 0) {
                         primary_fungible_store::deposit(vault_addr, fa_mid);
                     } else {
@@ -266,6 +278,37 @@ module yab::vault {
         tick_lower: u32,
         tick_upper: u32,
     ) acquires VaultState, YabRefs, VaultStrategy {
+        bootstrap_impl(admin, vault_addr, seed_amount_a, tick_lower, tick_upper, option::none());
+    }
+
+    #[test_only]
+    /// Same as `bootstrap` but uses a fixed oracle USD price (no live Pyth). For Move unit tests only.
+    public fun bootstrap_with_fixed_oracle(
+        admin: &signer,
+        vault_addr: address,
+        seed_amount_a: u64,
+        tick_lower: u32,
+        tick_upper: u32,
+        oracle_price: u64,
+    ) acquires VaultState, YabRefs, VaultStrategy {
+        bootstrap_impl(
+            admin,
+            vault_addr,
+            seed_amount_a,
+            tick_lower,
+            tick_upper,
+            option::some(oracle_price),
+        );
+    }
+
+    fun bootstrap_impl(
+        admin: &signer,
+        vault_addr: address,
+        seed_amount_a: u64,
+        tick_lower: u32,
+        tick_upper: u32,
+        price_override: option::Option<u64>,
+    ) acquires VaultState, YabRefs, VaultStrategy {
         assert!(seed_amount_a > 0, errors::zero_amount());
         assert!(tick_lower < tick_upper, errors::invalid_pool_config());
 
@@ -275,7 +318,7 @@ module yab::vault {
         let token_b_addr = { let v = borrow_global<VaultState>(vault_addr); v.token_b_metadata };
         let fee_tier_val = { let v = borrow_global<VaultState>(vault_addr); v.fee_tier };
 
-        let oracle_price = oracle::get_safe_price(0);
+        let oracle_price = resolve_oracle_price(0, price_override);
 
         let (sqrt_price_low, sqrt_price_high, slip_bps) = {
             let st = borrow_global<VaultStrategy>(vault_addr);
@@ -322,6 +365,7 @@ module yab::vault {
                 swap_amount,
                 fa_swap,
                 0,
+                meta_b,
             );
             fungible_asset::merge(&mut fa_a_for_lp, fa_in_remain);
             fa_b_out
@@ -382,13 +426,33 @@ module yab::vault {
         vault_addr: address,
         token_a_in: u64,
     ) acquires VaultState, YabRefs, VaultStrategy, UserCheckpoint {
+        deposit_impl(user, vault_addr, token_a_in, option::none());
+    }
+
+    #[test_only]
+    /// Same as `deposit` with a fixed oracle price (Move tests / stub DEX). Not included in production publish bytecode.
+    public fun deposit_with_fixed_oracle(
+        user: &signer,
+        vault_addr: address,
+        token_a_in: u64,
+        btc_usd_price: u64,
+    ) acquires VaultState, YabRefs, VaultStrategy, UserCheckpoint {
+        deposit_impl(user, vault_addr, token_a_in, option::some(btc_usd_price));
+    }
+
+    fun deposit_impl(
+        user: &signer,
+        vault_addr: address,
+        token_a_in: u64,
+        price_override: option::Option<u64>,
+    ) acquires VaultState, YabRefs, VaultStrategy, UserCheckpoint {
         assert!(token_a_in > 0, errors::zero_amount());
         let user_addr = signer::address_of(user);
 
         let btc_price = {
             let s = borrow_global<VaultState>(vault_addr);
             assert!(s.position_address != @0x0, errors::not_bootstrapped());
-            oracle::get_safe_price(s.last_recorded_price)
+            resolve_oracle_price(s.last_recorded_price, price_override)
         };
 
         let yab_price = {
@@ -458,6 +522,7 @@ module yab::vault {
                 swap_amount,
                 fa_swap,
                 0,
+                meta_b,
             );
             fungible_asset::merge(&mut fa_a_total, fa_in_remain);
             if (fungible_asset::amount(&fa_b_total) > 0) {
@@ -518,12 +583,31 @@ module yab::vault {
         vault_addr: address,
         shares_in: u64,
     ) acquires VaultState, YabRefs, UserCheckpoint {
+        withdraw_impl(user, vault_addr, shares_in, option::none());
+    }
+
+    #[test_only]
+    public fun withdraw_with_fixed_oracle(
+        user: &signer,
+        vault_addr: address,
+        shares_in: u64,
+        btc_usd_price: u64,
+    ) acquires VaultState, YabRefs, UserCheckpoint {
+        withdraw_impl(user, vault_addr, shares_in, option::some(btc_usd_price));
+    }
+
+    fun withdraw_impl(
+        user: &signer,
+        vault_addr: address,
+        shares_in: u64,
+        price_override: option::Option<u64>,
+    ) acquires VaultState, YabRefs, UserCheckpoint {
         assert!(shares_in > 0, errors::zero_amount());
         let user_addr = signer::address_of(user);
 
         let btc_price = {
             let s = borrow_global<VaultState>(vault_addr);
-            oracle::get_safe_price(s.last_recorded_price)
+            resolve_oracle_price(s.last_recorded_price, price_override)
         };
 
         let yab_price = {
@@ -636,6 +720,7 @@ module yab::vault {
                         b_amt,
                         fa_b,
                         0,
+                        meta_a,
                     );
                     if (fungible_asset::amount(&fa_mid) > 0) {
                         primary_fungible_store::deposit(user_addr, fa_mid);
@@ -693,7 +778,7 @@ module yab::vault {
         let pos = object::address_to_object<position_v3::Info>(state.position_address);
         let pool = pool_v3::liquidity_pool(meta_a, meta_b, fee_tier_val);
 
-        let (fee_a, fee_b) = pool_v3::claim_fees(&vault_signer, pos);
+        let (fee_a, fee_b) = pool_v3::claim_fees(&vault_signer, pos, meta_a, meta_b);
         state.free_btc = state.free_btc + fungible_asset::amount(&fee_a);
         state.free_usdc = state.free_usdc + fungible_asset::amount(&fee_b);
         primary_fungible_store::deposit(vault_addr, fee_a);
@@ -767,7 +852,7 @@ module yab::vault {
         let pos = object::address_to_object<position_v3::Info>(state.position_address);
         let pool = pool_v3::liquidity_pool(meta_a, meta_b, fee_tier_val);
 
-        let (fee_a, fee_b) = pool_v3::claim_fees(&vault_signer, pos);
+        let (fee_a, fee_b) = pool_v3::claim_fees(&vault_signer, pos, meta_a, meta_b);
         state.free_btc = state.free_btc + fungible_asset::amount(&fee_a);
         state.free_usdc = state.free_usdc + fungible_asset::amount(&fee_b);
         primary_fungible_store::deposit(vault_addr, fee_a);
@@ -832,6 +917,7 @@ module yab::vault {
                 swap_amount,
                 fa_swap,
                 0,
+                meta_b,
             );
             fungible_asset::merge(&mut fa_a_total, fa_in_remain);
             if (fungible_asset::amount(&fa_b_total) > 0) {
@@ -967,5 +1053,43 @@ module yab::vault {
             s.last_rebalance_ts,
             s.performance_fee_bps,
         )
+    }
+
+    #[test_only]
+    /// YAB price at an explicit BTC/USD oracle price (E2E tests without Pyth).
+    public fun e2e_yab_price(vault_addr: address, btc_usd_price: u64): u64 acquires VaultState {
+        let s = borrow_global<VaultState>(vault_addr);
+        get_yab_price(s, vault_addr, btc_usd_price)
+    }
+
+    #[test_only]
+    /// Total assets at an explicit BTC/USD oracle price (E2E tests).
+    public fun e2e_total_assets(vault_addr: address, btc_usd_price: u64): u64 acquires VaultState {
+        let s = borrow_global<VaultState>(vault_addr);
+        get_total_assets(s, btc_usd_price)
+    }
+
+    #[test_only]
+    /// Override user checkpoint entry price (E2E fee scenarios).
+    public fun e2e_set_checkpoint_entry(user: &signer, entry_price: u64) acquires UserCheckpoint {
+        let a = signer::address_of(user);
+        if (exists<UserCheckpoint>(a)) {
+            borrow_global_mut<UserCheckpoint>(a).entry_price = entry_price;
+        } else {
+            move_to(user, UserCheckpoint { entry_price });
+        };
+    }
+
+    #[test_only]
+    /// Set vault free reserves (E2E `free_*` paths; stub DEX only).
+    public fun e2e_set_free_reserves(vault_addr: address, free_btc: u64, free_usdc: u64) acquires VaultState {
+        let s = borrow_global_mut<VaultState>(vault_addr);
+        s.free_btc = free_btc;
+        s.free_usdc = free_usdc;
+    }
+
+    #[test_only]
+    public fun e2e_free_btc(vault_addr: address): u64 acquires VaultState {
+        borrow_global<VaultState>(vault_addr).free_btc
     }
 }

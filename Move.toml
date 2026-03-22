@@ -37,7 +37,6 @@ rev = "main"
 
 # Package name in this repo is `dex` (modules: dex_contract::pool_v3, router_v3, position_v3, ...).
 [dependencies.dex]
-git = "https://github.com/Hyperfluid/hyperfluid-interface"
-rev = "main"
+local = "./dex-local"
 
 [dev-dependencies]

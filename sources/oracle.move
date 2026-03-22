@@ -16,7 +16,7 @@ module yab::oracle {
         x"e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43";
 
     /// Staleness, deviation spike, and confidence checks on cached Pyth fields (`raw` = positive magnitude).
-    fun validate_cached_price(
+    public fun validate_cached_price(
         last_recorded_price: u64,
         now_secs: u64,
         feed_timestamp_secs: u64,
