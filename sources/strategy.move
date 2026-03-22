@@ -64,6 +64,22 @@ module yab::strategy {
         params.max_swap_slippage_bps
     }
 
+    public fun min_rebalance_interval_secs(params: &StrategyParams): u64 {
+        params.min_rebalance_interval_secs
+    }
+
+    /// Governance: update range width, rebalance trigger, and swap slippage; other fields unchanged.
+    public fun update_params_from_governance(
+        params: &mut StrategyParams,
+        range_half_width_bps: u64,
+        rebalance_trigger_bps: u64,
+        max_swap_slippage_bps: u64,
+    ) {
+        params.range_half_width_bps = range_half_width_bps;
+        params.rebalance_trigger_bps = rebalance_trigger_bps;
+        params.max_swap_slippage_bps = max_swap_slippage_bps;
+    }
+
     /// Returns true when |current - center| / center >= trigger (BPS). If `center_price == 0`, returns true.
     public fun should_rebalance(
         current_price: u64,
