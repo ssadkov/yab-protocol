@@ -7,36 +7,30 @@ authors = []
 # Named addresses for this package and dependencies (see dependency `dex` / Hyperion interface).
 # All named addresses must be resolved here for `aptos move compile` (no "_"), OR use [dev-addresses] + `aptos move compile --dev`.
 #
-# Pyth `pyth`, `wormhole`, `deployer` — same on Aptos mainnet and testnet (official docs):
-# https://docs.pyth.network/price-feeds/contract-addresses/aptos
-#
+# `deployer` — Wormhole deployer (Hyperion / local dex stubs). Add `pyth` / `wormhole` named addresses
+# when re-enabling the real Pyth dependency in `oracle.move`.
 # `dex_contract` — published Hyperion DEX package (`.cursorrules`): testnet vs mainnet.
 [addresses]
-yab = "0x8a233984c022b893a3b84f031abbac21ac5e9dd58159bce14b8ed0a155baaffb"
-pyth = "0x7e783b349d3e89cf5931af376ebeadbfab855b3fa239b7ada8f5a92fbea6b387"
-wormhole = "0x5bc11445584a763c1fa7ed39081f1b920954da14e04b32440cba863d03e19625"
-dex_contract = "0x69faed94da99abb7316cb3ec2eeaa1b961a47349fad8c584f67a930b0d14fec7"
+yab = "0xd42e699a4b22880d77da7dd02bb2fa768ecaa8cb1c4aa1423f968f480c97a60b"
+dex_contract = "0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c"
 deployer = "0xb31e712b26fd295357355f6845e77c888298636609e93bc9b05f0f604049f434"
 
 [dev-addresses]
 
+# Match Aptos git rev embedded in the published Pyth package on Aptos testnet/mainnet (see `aptos move download --print-metadata`).
 [dependencies.AptosFramework]
 git = "https://github.com/aptos-labs/aptos-core.git"
 subdir = "aptos-move/framework/aptos-framework"
-rev = "main"
+rev = "2c74a456298fcd520241a562119b6fe30abdaae2"
 
 [dependencies.AptosStdlib]
 git = "https://github.com/aptos-labs/aptos-core.git"
 subdir = "aptos-move/framework/aptos-stdlib"
-rev = "main"
+rev = "2c74a456298fcd520241a562119b6fe30abdaae2"
 
-[dependencies.Pyth]
-git = "https://github.com/pyth-network/pyth-crosschain.git"
-subdir = "target_chains/aptos/contracts"
-rev = "main"
-
-# Package name in this repo is `dex` (modules: dex_contract::pool_v3, router_v3, position_v3, ...).
+# Hyperion CLMM interface — pin matches published Hyperion on Aptos testnet (see `dex_contract` in [addresses]).
 [dependencies.dex]
-local = "./dex-local"
+git = "https://github.com/Hyperfluid/hyperfluid-interface.git"
+rev = "595fec8db8c9bd9aa7050f7342f316d48f722108"
 
 [dev-dependencies]

@@ -1,0 +1,41 @@
+[package]
+name = "dex"
+version = "1.0.0"
+upgrade_policy = "compatible"
+authors = []
+
+[addresses]
+dex_contract = "_"
+dex_deployer = "_"
+commission = "_"
+context = "_"
+fee_sharer = "_"
+pyth = "_"
+deployer = "_"
+wormhole = "_"
+
+[dev-addresses]
+dex_contract = "0xaa"
+dex_deployer = "0xbb"
+commission = "0xcc"
+fee_sharer = "0xdd"
+context = "0xee"
+pyth = "0x7e783b349d3e89cf5931af376ebeadbfab855b3fa239b7ada8f5a92fbea6b387"
+deployer = "0xb31e712b26fd295357355f6845e77c888298636609e93bc9b05f0f604049f434"
+wormhole = "0x5bc11445584a763c1fa7ed39081f1b920954da14e04b32440cba863d03e19625"
+
+
+[dependencies]
+
+commission-package = { git = "git@github.com:Hyperionxyz/commission.git", rev = "testnet" }
+AptosFramework = { git = "https://github.com/aptos-labs/aptos-framework.git", subdir = "aptos-framework", rev = "mainnet" }
+context = { git = "git@github.com:Hyperionxyz/context.git", rev = "testnet" }
+caas_framework = { git = "git@github.com:caasxyz/caas-framework.git", rev = "testnet", subdir = "caas-framework" }
+Pyth = { git = "git@github.com:Hyperionxyz/pyth-dep.git", subdir = "pyth", rev = "test" }
+
+[dev-dependencies]
+commission-package = { git = "git@github.com:Hyperionxyz/commission.git", rev = "testnet" }
+AptosFramework = { git = "https://github.com/aptos-labs/aptos-framework.git", subdir = "aptos-framework", rev = "mainnet" }
+context = { git = "git@github.com:Hyperionxyz/context.git", rev = "testnet" }
+caas_framework = { git = "git@github.com:caasxyz/caas-framework.git", rev = "testnet", subdir = "caas-framework" }
+Pyth = { git = "git@github.com:Hyperionxyz/pyth-dep.git", subdir = "pyth", rev = "test" }

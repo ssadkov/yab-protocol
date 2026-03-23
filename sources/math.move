@@ -17,6 +17,17 @@ module yab::math {
     /// All inputs are sqrt prices in Q64.64 (see pool / oracle integration).
     /// Returns ratio in basis points (0–10000).
     ///
+    /// Build `[sqrt_low, sqrt_high]` in **pool sqrt space** (same as `pool_v3::current_tick_and_price`).
+    /// Multiplicative ±`half_width_bps` on `sqrt_current` so `btc_ratio_bps` always has
+    /// `sqrt_low <= sqrt_current <= sqrt_high` (oracle-derived sqrt is not comparable to pool sqrt).
+    public fun sqrt_bps_band_around_current(sqrt_current: u128, half_width_bps: u64): (u128, u128) {
+        assert!(sqrt_current > 0, 0);
+        assert!(half_width_bps <= 10000, 0);
+        let lo = sqrt_current * (10000u128 - (half_width_bps as u128)) / 10000;
+        let hi = sqrt_current * (10000u128 + (half_width_bps as u128)) / 10000;
+        (lo, hi)
+    }
+
     /// Formula: (sqrt_high - sqrt_current) / (sqrt_high - sqrt_low)
     public fun btc_ratio_bps(
         sqrt_current: u128,
@@ -24,12 +35,17 @@ module yab::math {
         sqrt_high: u128,
     ): u64 {
         assert!(sqrt_current >= sqrt_low && sqrt_current <= sqrt_high, 0);
-        let numerator = (sqrt_high - sqrt_current) as u64;
-        let denominator = (sqrt_high - sqrt_low) as u64;
+        let numerator = sqrt_high - sqrt_current;
+        let denominator = sqrt_high - sqrt_low;
         if (denominator == 0) {
             return 0
         };
-        numerator * 10000 / denominator
+        let ratio = numerator * 10000 / denominator;
+        if (ratio > 10000) {
+            10000
+        } else {
+            ratio as u64
+        }
     }
 
     /// Convert USD price (8 decimals, e.g. satoshi-style units) to approximate Q64.64 sqrt price.

@@ -5,8 +5,6 @@ module yab::vault_e2e_tests {
     use aptos_framework::object;
     use aptos_framework::primary_fungible_store;
     use aptos_framework::timestamp;
-    use dex_contract::position_v3;
-    use dex_contract::pool_v3;
     use std::option;
     use std::signer;
     use std::string::utf8;
@@ -39,9 +37,6 @@ module yab::vault_e2e_tests {
         framework: &signer,
     ): (address, address, MintRef) {
         timestamp::set_time_has_started_for_testing(framework);
-        let dex_signer = account::create_signer_for_test(@dex_contract);
-        pool_v3::ensure_pool_stub_for_test(&dex_signer);
-        position_v3::ensure_position_stub_for_test(&dex_signer);
 
         let cref_a = object::create_named_object(creator_a, b"E2E_TOKEN_A");
         primary_fungible_store::create_primary_store_enabled_fungible_asset(
@@ -67,6 +62,10 @@ module yab::vault_e2e_tests {
             utf8(b""),
         );
         let mb = object::address_from_constructor_ref(&cref_b);
+
+        let _meta_a = object::address_to_object<Metadata>(ma);
+        let _meta_b = object::address_to_object<Metadata>(mb);
+        // Hyperion git interface has no dex-local test stubs; pool/position views return empty handles for tests.
 
         let admin_addr = signer::address_of(admin);
         account::create_account_for_test(admin_addr);

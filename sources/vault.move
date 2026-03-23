@@ -97,6 +97,12 @@ module yab::vault {
 
     const INITIAL_YAB_PRICE: u64 = 100_000_000; // 1.0 with 8 decimals
     const DEADLINE_SECS: u64 = 1800;
+    /// Minimum token-A deposit (WBTC, 8 decimals). Below this, Hyperion swap/add_liquidity often reverts (e.g. `Sub` in router).
+    const MIN_DEPOSIT_TOKEN_A: u64 = 20_000; // 0.0002 WBTC — raise if your pool still reverts
+    /// Minimum token-B amount (post-swap) before `add_liquidity_by_contract` when a swap was performed.
+    const MIN_POST_SWAP_TOKEN_B: u64 = 100;
+    /// `deposit_dual`: minimum token B pulled from user (USDC raw units; avoids dust-only B leg).
+    const MIN_DEPOSIT_TOKEN_B_DUAL: u64 = 100;
 
     /// Pyth on-chain read, or a fixed price for `aptos move test` E2E paths only (`#[test_only]` callers pass `some(price)`).
     fun resolve_oracle_price(last_recorded: u64, price_override: option::Option<u64>): u64 {
@@ -160,6 +166,29 @@ module yab::vault {
         }
     }
 
+    /// Hyperion requires a non-trivial sqrt-price limit for swaps.
+    /// Build a tight limit around the current pool price in the swap direction.
+    fun swap_sqrt_price_limit(pool: Object<LiquidityPoolV3>, a2b: bool): u128 {
+        let pool_addr = object::object_address(&pool);
+        let (_, sqrt_now) = pool_v3::current_tick_and_price(pool_addr);
+        if (sqrt_now == 0) {
+            return 1
+        };
+        if (a2b) {
+            if (sqrt_now > 1) {
+                sqrt_now - 1
+            } else {
+                1
+            }
+        } else {
+            if (sqrt_now < 0xffffffffffffffffffffffffffffffff) {
+                sqrt_now + 1
+            } else {
+                sqrt_now
+            }
+        }
+    }
+
     /// Gauge / partner reward assets: only pool token A/B supported; others abort.
     fun process_reward_assets(
         rewards: vector<FungibleAsset>,
@@ -181,7 +210,8 @@ module yab::vault {
             } else if (maddr == object::object_address(&meta_b)) {
                 let amt = fungible_asset::amount(&fa);
                 if (amt > 0) {
-                    let (_o0, fa_mid, fa_out) = pool_v3::swap(pool, false, true, amt, fa, 0, meta_a);
+                    let limit = swap_sqrt_price_limit(pool, false);
+                    let (_o0, fa_mid, fa_out) = pool_v3::swap(pool, false, true, amt, fa, limit);
                     if (fungible_asset::amount(&fa_mid) > 0) {
                         primary_fungible_store::deposit(vault_addr, fa_mid);
                     } else {
@@ -281,6 +311,26 @@ module yab::vault {
         bootstrap_impl(admin, vault_addr, seed_amount_a, tick_lower, tick_upper, option::none());
     }
 
+    /// Dual-token bootstrap for pools without single-token zap path.
+    public entry fun bootstrap_dual(
+        admin: &signer,
+        vault_addr: address,
+        seed_amount_a: u64,
+        seed_amount_b: u64,
+        tick_lower: u32,
+        tick_upper: u32,
+    ) acquires VaultState, YabRefs, VaultStrategy {
+        bootstrap_dual_impl(
+            admin,
+            vault_addr,
+            seed_amount_a,
+            seed_amount_b,
+            tick_lower,
+            tick_upper,
+            option::none(),
+        );
+    }
+
     #[test_only]
     /// Same as `bootstrap` but uses a fixed oracle USD price (no live Pyth). For Move unit tests only.
     public fun bootstrap_with_fixed_oracle(
@@ -320,13 +370,11 @@ module yab::vault {
 
         let oracle_price = resolve_oracle_price(0, price_override);
 
-        let (sqrt_price_low, sqrt_price_high, slip_bps) = {
+        let (slip_bps, half_bps) = {
             let st = borrow_global<VaultStrategy>(vault_addr);
-            let r = strat::get_target_range(oracle_price, &st.params);
             (
-                strat::range_sqrt_price_low(&r),
-                strat::range_sqrt_price_high(&r),
                 strat::max_swap_slippage_bps(&st.params),
+                strat::range_half_width_bps(&st.params),
             )
         };
 
@@ -342,6 +390,7 @@ module yab::vault {
             math::price_to_sqrt_q64(oracle_price)
         };
 
+        let (sqrt_price_low, sqrt_price_high) = math::sqrt_bps_band_around_current(sqrt_current, half_bps);
         let btc_ratio = math::btc_ratio_bps(sqrt_current, sqrt_price_low, sqrt_price_high);
         let swap_amount = seed_amount_a * (10000 - (btc_ratio as u64)) / 10000;
 
@@ -358,14 +407,14 @@ module yab::vault {
 
         let fa_b_for_lp = if (swap_amount > 0) {
             let fa_swap = fungible_asset::extract(&mut fa_a_for_lp, swap_amount);
+            let limit = swap_sqrt_price_limit(pool, true);
             let (_amt_out, fa_in_remain, fa_b_out) = pool_v3::swap(
                 pool,
                 true,
                 true,
                 swap_amount,
                 fa_swap,
-                0,
-                meta_b,
+                limit,
             );
             fungible_asset::merge(&mut fa_a_for_lp, fa_in_remain);
             fa_b_out
@@ -420,13 +469,133 @@ module yab::vault {
         };
     }
 
+    #[test_only]
+    public fun bootstrap_dual_with_fixed_oracle(
+        admin: &signer,
+        vault_addr: address,
+        seed_amount_a: u64,
+        seed_amount_b: u64,
+        tick_lower: u32,
+        tick_upper: u32,
+        oracle_price: u64,
+    ) acquires VaultState, YabRefs, VaultStrategy {
+        bootstrap_dual_impl(
+            admin,
+            vault_addr,
+            seed_amount_a,
+            seed_amount_b,
+            tick_lower,
+            tick_upper,
+            option::some(oracle_price),
+        );
+    }
+
+    fun bootstrap_dual_impl(
+        admin: &signer,
+        vault_addr: address,
+        seed_amount_a: u64,
+        seed_amount_b: u64,
+        tick_lower: u32,
+        tick_upper: u32,
+        price_override: option::Option<u64>,
+    ) acquires VaultState, YabRefs, VaultStrategy {
+        assert!(seed_amount_a > 0, errors::zero_amount());
+        assert!(seed_amount_b > 0, errors::zero_amount());
+        assert!(tick_lower < tick_upper, errors::invalid_pool_config());
+
+        let admin_addr = signer::address_of(admin);
+        let oracle_price = resolve_oracle_price(0, price_override);
+
+        let token_a_addr = { let v = borrow_global<VaultState>(vault_addr); v.token_a_metadata };
+        let token_b_addr = { let v = borrow_global<VaultState>(vault_addr); v.token_b_metadata };
+        let fee_tier_val = { let v = borrow_global<VaultState>(vault_addr); v.fee_tier };
+        let slip_bps = {
+            let st = borrow_global<VaultStrategy>(vault_addr);
+            strat::max_swap_slippage_bps(&st.params)
+        };
+
+        let meta_a = object::address_to_object<Metadata>(token_a_addr);
+        let meta_b = object::address_to_object<Metadata>(token_b_addr);
+
+        let state = borrow_global_mut<VaultState>(vault_addr);
+        assert!(admin_addr == state.admin, errors::not_admin());
+        assert!(state.position_address == @0x0, errors::already_bootstrapped());
+
+        state.last_recorded_price = oracle_price;
+        state.center_price = oracle_price;
+        let vault_signer = object::generate_signer_for_extending(&state.extend_ref);
+
+        let fa_a_for_lp = primary_fungible_store::withdraw(admin, meta_a, seed_amount_a);
+        let fa_b_for_lp = primary_fungible_store::withdraw(admin, meta_b, seed_amount_b);
+
+        let position = pool_v3::open_position(
+            &vault_signer,
+            meta_a,
+            meta_b,
+            fee_tier_val,
+            tick_lower,
+            tick_upper,
+        );
+
+        let amount_a_desired = fungible_asset::amount(&fa_a_for_lp);
+        let amount_b_desired = fungible_asset::amount(&fa_b_for_lp);
+        let min_a = amount_a_desired * (10000 - slip_bps) / 10000;
+        let min_b = amount_b_desired * (10000 - slip_bps) / 10000;
+        let deadline = timestamp::now_seconds() + DEADLINE_SECS;
+
+        let (used_a, used_b, leftover_a, leftover_b) = router_v3::add_liquidity_by_contract(
+            &vault_signer,
+            position,
+            amount_a_desired,
+            amount_b_desired,
+            min_a,
+            min_b,
+            fa_a_for_lp,
+            fa_b_for_lp,
+            deadline,
+        );
+
+        let pos_addr = object::object_address(&position);
+        state.position_address = pos_addr;
+        state.position_btc = used_a;
+        state.position_usdc = used_b;
+        state.free_btc = fungible_asset::amount(&leftover_a);
+        state.free_usdc = fungible_asset::amount(&leftover_b);
+        state.last_rebalance_ts = timestamp::now_seconds();
+
+        primary_fungible_store::deposit(vault_addr, leftover_a);
+        primary_fungible_store::deposit(vault_addr, leftover_b);
+
+        let mint_equiv = (used_a as u128) + (used_b as u128) * 100_000_000 / (oracle_price as u128);
+        let shares = mint_equiv as u64;
+        assert!(shares > 0, errors::zero_amount());
+
+        let refs = borrow_global<YabRefs>(vault_addr);
+        let yab_fa = fungible_asset::mint(&refs.mint_ref, shares);
+        primary_fungible_store::deposit(admin_addr, yab_fa);
+
+        if (!exists<UserCheckpoint>(admin_addr)) {
+            move_to(admin, UserCheckpoint { entry_price: INITIAL_YAB_PRICE });
+        };
+    }
+
     /// User adds token A; NAV fixed from oracle before state change; adds to existing Hyperion position.
     public entry fun deposit(
         user: &signer,
         vault_addr: address,
         token_a_in: u64,
     ) acquires VaultState, YabRefs, VaultStrategy, UserCheckpoint {
-        deposit_impl(user, vault_addr, token_a_in, option::none());
+        deposit_impl(user, vault_addr, token_a_in, option::none(), true);
+    }
+
+    /// Same as `deposit` but user supplies **both** pool tokens in one tx (no in-contract swap). Use when single-asset ZAP is unreliable.
+    public entry fun deposit_dual(
+        user: &signer,
+        vault_addr: address,
+        token_a_in: u64,
+        token_b_in: u64,
+    ) acquires VaultState, YabRefs, VaultStrategy, UserCheckpoint {
+        deposit_dual_impl(user, vault_addr, token_a_in, token_b_in, option::none(), true);
     }
 
     #[test_only]
@@ -437,16 +606,40 @@ module yab::vault {
         token_a_in: u64,
         btc_usd_price: u64,
     ) acquires VaultState, YabRefs, VaultStrategy, UserCheckpoint {
-        deposit_impl(user, vault_addr, token_a_in, option::some(btc_usd_price));
+        deposit_impl(user, vault_addr, token_a_in, option::some(btc_usd_price), false);
     }
 
-    fun deposit_impl(
+    #[test_only]
+    public fun deposit_dual_with_fixed_oracle(
         user: &signer,
         vault_addr: address,
         token_a_in: u64,
-        price_override: option::Option<u64>,
+        token_b_in: u64,
+        btc_usd_price: u64,
     ) acquires VaultState, YabRefs, VaultStrategy, UserCheckpoint {
-        assert!(token_a_in > 0, errors::zero_amount());
+        deposit_dual_impl(
+            user,
+            vault_addr,
+            token_a_in,
+            token_b_in,
+            option::some(btc_usd_price),
+            false,
+        );
+    }
+
+    fun deposit_dual_impl(
+        user: &signer,
+        vault_addr: address,
+        token_a_in: u64,
+        token_b_in: u64,
+        price_override: option::Option<u64>,
+        enforce_min_deposit: bool,
+    ) acquires VaultState, YabRefs, VaultStrategy, UserCheckpoint {
+        assert!(token_a_in > 0 && token_b_in > 0, errors::zero_amount());
+        if (enforce_min_deposit) {
+            assert!(token_a_in >= MIN_DEPOSIT_TOKEN_A, errors::deposit_too_small());
+            assert!(token_b_in >= MIN_DEPOSIT_TOKEN_B_DUAL, errors::deposit_too_small());
+        };
         let user_addr = signer::address_of(user);
 
         let btc_price = {
@@ -460,12 +653,117 @@ module yab::vault {
             get_yab_price(s, vault_addr, btc_price)
         };
 
-        let (sqrt_price_low, sqrt_price_high, slip_bps) = {
+        let slip_bps = {
             let st = borrow_global<VaultStrategy>(vault_addr);
-            let r = strat::get_target_range(btc_price, &st.params);
+            strat::max_swap_slippage_bps(&st.params)
+        };
+
+        let (meta_a, meta_b, pos_addr) = {
+            let s = borrow_global<VaultState>(vault_addr);
             (
-                strat::range_sqrt_price_low(&r),
-                strat::range_sqrt_price_high(&r),
+                object::address_to_object<Metadata>(s.token_a_metadata),
+                object::address_to_object<Metadata>(s.token_b_metadata),
+                s.position_address,
+            )
+        };
+
+        let state = borrow_global_mut<VaultState>(vault_addr);
+        state.last_recorded_price = btc_price;
+
+        let vault_signer = object::generate_signer_for_extending(&state.extend_ref);
+
+        let fa_a_total = primary_fungible_store::withdraw(user, meta_a, token_a_in);
+        if (state.free_btc > 0) {
+            let fa_free = primary_fungible_store::withdraw(&vault_signer, meta_a, state.free_btc);
+            fungible_asset::merge(&mut fa_a_total, fa_free);
+            state.free_btc = 0;
+        };
+
+        let fa_b_total = primary_fungible_store::withdraw(user, meta_b, token_b_in);
+        if (state.free_usdc > 0) {
+            let fa_free_b = primary_fungible_store::withdraw(&vault_signer, meta_b, state.free_usdc);
+            fungible_asset::merge(&mut fa_b_total, fa_free_b);
+            state.free_usdc = 0;
+        };
+
+        let position = object::address_to_object<position_v3::Info>(pos_addr);
+        let amount_a_desired = fungible_asset::amount(&fa_a_total);
+        let amount_b_desired = fungible_asset::amount(&fa_b_total);
+        let min_a = amount_a_desired * (10000 - slip_bps) / 10000;
+        let min_b = amount_b_desired * (10000 - slip_bps) / 10000;
+        let deadline = timestamp::now_seconds() + DEADLINE_SECS;
+
+        let (used_a, used_b, leftover_a, leftover_b) = router_v3::add_liquidity_by_contract(
+            &vault_signer,
+            position,
+            amount_a_desired,
+            amount_b_desired,
+            min_a,
+            min_b,
+            fa_a_total,
+            fa_b_total,
+            deadline,
+        );
+
+        state.position_btc = state.position_btc + used_a;
+        state.position_usdc = state.position_usdc + used_b;
+        state.free_btc = fungible_asset::amount(&leftover_a);
+        state.free_usdc = fungible_asset::amount(&leftover_b);
+
+        primary_fungible_store::deposit(vault_addr, leftover_a);
+        primary_fungible_store::deposit(vault_addr, leftover_b);
+
+        let btc_in_equiv = (token_a_in as u128)
+            + (token_b_in as u128) * 100_000_000 / (btc_price as u128);
+        let shares = ((btc_in_equiv * 100_000_000) / (yab_price as u128)) as u64;
+        assert!(shares > 0, errors::zero_amount());
+
+        let refs = borrow_global<YabRefs>(vault_addr);
+        let yab_fa = fungible_asset::mint(&refs.mint_ref, shares);
+        primary_fungible_store::deposit(user_addr, yab_fa);
+
+        if (!exists<UserCheckpoint>(user_addr)) {
+            move_to(user, UserCheckpoint { entry_price: yab_price });
+        } else {
+            let chk = borrow_global_mut<UserCheckpoint>(user_addr);
+            chk.entry_price = yab_price;
+        };
+
+        event::emit(Deposited {
+            user: user_addr,
+            btc_in: (btc_in_equiv as u64),
+            shares_minted: shares,
+        });
+    }
+
+    fun deposit_impl(
+        user: &signer,
+        vault_addr: address,
+        token_a_in: u64,
+        price_override: option::Option<u64>,
+        enforce_min_deposit: bool,
+    ) acquires VaultState, YabRefs, VaultStrategy, UserCheckpoint {
+        assert!(token_a_in > 0, errors::zero_amount());
+        if (enforce_min_deposit) {
+            assert!(token_a_in >= MIN_DEPOSIT_TOKEN_A, errors::deposit_too_small());
+        };
+        let user_addr = signer::address_of(user);
+
+        let btc_price = {
+            let s = borrow_global<VaultState>(vault_addr);
+            assert!(s.position_address != @0x0, errors::not_bootstrapped());
+            resolve_oracle_price(s.last_recorded_price, price_override)
+        };
+
+        let yab_price = {
+            let s = borrow_global<VaultState>(vault_addr);
+            get_yab_price(s, vault_addr, btc_price)
+        };
+
+        let (half_bps, slip_bps) = {
+            let st = borrow_global<VaultStrategy>(vault_addr);
+            (
+                strat::range_half_width_bps(&st.params),
                 strat::max_swap_slippage_bps(&st.params),
             )
         };
@@ -488,6 +786,7 @@ module yab::vault {
         } else {
             math::price_to_sqrt_q64(btc_price)
         };
+        let (sqrt_price_low, sqrt_price_high) = math::sqrt_bps_band_around_current(sqrt_current, half_bps);
         let btc_ratio = math::btc_ratio_bps(sqrt_current, sqrt_price_low, sqrt_price_high);
 
         let state = borrow_global_mut<VaultState>(vault_addr);
@@ -515,14 +814,14 @@ module yab::vault {
 
         let fa_b_for_lp = if (swap_amount > 0) {
             let fa_swap = fungible_asset::extract(&mut fa_a_total, swap_amount);
+            let limit = swap_sqrt_price_limit(pool, true);
             let (_amt_out, fa_in_remain, fa_b_from_swap) = pool_v3::swap(
                 pool,
                 true,
                 true,
                 swap_amount,
                 fa_swap,
-                0,
-                meta_b,
+                limit,
             );
             fungible_asset::merge(&mut fa_a_total, fa_in_remain);
             if (fungible_asset::amount(&fa_b_total) > 0) {
@@ -533,6 +832,13 @@ module yab::vault {
             fa_b_from_swap
         } else {
             fa_b_total
+        };
+
+        if (swap_amount > 0 && enforce_min_deposit) {
+            assert!(
+                fungible_asset::amount(&fa_b_for_lp) >= MIN_POST_SWAP_TOKEN_B,
+                errors::deposit_too_small(),
+            );
         };
 
         let position = object::address_to_object<position_v3::Info>(pos_addr);
@@ -713,14 +1019,14 @@ module yab::vault {
                     } else {
                         state.position_usdc = 0;
                     };
+                    let limit = swap_sqrt_price_limit(pool, false);
                     let (_o1, fa_mid, fa_a_out) = pool_v3::swap(
                         pool,
                         false,
                         true,
                         b_amt,
                         fa_b,
-                        0,
-                        meta_a,
+                        limit,
                     );
                     if (fungible_asset::amount(&fa_mid) > 0) {
                         primary_fungible_store::deposit(user_addr, fa_mid);
@@ -778,7 +1084,7 @@ module yab::vault {
         let pos = object::address_to_object<position_v3::Info>(state.position_address);
         let pool = pool_v3::liquidity_pool(meta_a, meta_b, fee_tier_val);
 
-        let (fee_a, fee_b) = pool_v3::claim_fees(&vault_signer, pos, meta_a, meta_b);
+        let (fee_a, fee_b) = pool_v3::claim_fees(&vault_signer, pos);
         state.free_btc = state.free_btc + fungible_asset::amount(&fee_a);
         state.free_usdc = state.free_usdc + fungible_asset::amount(&fee_b);
         primary_fungible_store::deposit(vault_addr, fee_a);
@@ -813,13 +1119,11 @@ module yab::vault {
             oracle::get_safe_price(s.last_recorded_price)
         };
 
-        let (sqrt_price_low, sqrt_price_high, slip_bps) = {
+        let (slip_bps, half_bps) = {
             let st = borrow_global<VaultStrategy>(vault_addr);
-            let r = strat::get_target_range(btc_price, &st.params);
             (
-                strat::range_sqrt_price_low(&r),
-                strat::range_sqrt_price_high(&r),
                 strat::max_swap_slippage_bps(&st.params),
+                strat::range_half_width_bps(&st.params),
             )
         };
 
@@ -852,7 +1156,7 @@ module yab::vault {
         let pos = object::address_to_object<position_v3::Info>(state.position_address);
         let pool = pool_v3::liquidity_pool(meta_a, meta_b, fee_tier_val);
 
-        let (fee_a, fee_b) = pool_v3::claim_fees(&vault_signer, pos, meta_a, meta_b);
+        let (fee_a, fee_b) = pool_v3::claim_fees(&vault_signer, pos);
         state.free_btc = state.free_btc + fungible_asset::amount(&fee_a);
         state.free_usdc = state.free_usdc + fungible_asset::amount(&fee_b);
         primary_fungible_store::deposit(vault_addr, fee_a);
@@ -902,6 +1206,7 @@ module yab::vault {
         } else {
             math::price_to_sqrt_q64(btc_price)
         };
+        let (sqrt_price_low, sqrt_price_high) = math::sqrt_bps_band_around_current(sqrt_current, half_bps);
         let btc_ratio = math::btc_ratio_bps(sqrt_current, sqrt_price_low, sqrt_price_high);
         let total_a = fungible_asset::amount(&fa_a_merged);
         let swap_amount = total_a * (10000 - (btc_ratio as u64)) / 10000;
@@ -910,14 +1215,14 @@ module yab::vault {
         let fa_b_total = fa_b_merged;
         let fa_b_for_lp = if (swap_amount > 0) {
             let fa_swap = fungible_asset::extract(&mut fa_a_total, swap_amount);
+            let limit = swap_sqrt_price_limit(pool, true);
             let (_amt_out, fa_in_remain, fa_b_from_swap) = pool_v3::swap(
                 pool,
                 true,
                 true,
                 swap_amount,
                 fa_swap,
-                0,
-                meta_b,
+                limit,
             );
             fungible_asset::merge(&mut fa_a_total, fa_in_remain);
             if (fungible_asset::amount(&fa_b_total) > 0) {
@@ -1022,9 +1327,8 @@ module yab::vault {
         );
     }
 
-    // Views: read-only; NAV uses oracle `get_safe_price`.
+    // Read helpers (not `#[view]`): bytecode verifier rejects mixed view/non-view call graphs with Pyth + acquires.
 
-    #[view]
     public fun get_yab_price_view(vault_addr: address): u64 acquires VaultState {
         let btc_price = {
             let s = borrow_global<VaultState>(vault_addr);
@@ -1034,7 +1338,6 @@ module yab::vault {
         get_yab_price(s, vault_addr, btc_price)
     }
 
-    #[view]
     public fun get_total_assets_view(vault_addr: address): u64 acquires VaultState {
         let btc_price = {
             let s = borrow_global<VaultState>(vault_addr);
@@ -1044,7 +1347,6 @@ module yab::vault {
         get_total_assets(s, btc_price)
     }
 
-    #[view]
     public fun get_vault_state(vault_addr: address): (u64, u64, u64, u64) acquires VaultState {
         let s = borrow_global<VaultState>(vault_addr);
         (

@@ -35,4 +35,12 @@ module yab::math_tests {
         let cur: u128 = 100;
         assert!(math::btc_ratio_bps(cur, low, high) == 10000, 1);
     }
+
+    #[test]
+    fun test_sqrt_bps_band_brackets_current() {
+        let cur: u128 = 1_000_000_000_000_000_000;
+        let (lo, hi) = math::sqrt_bps_band_around_current(cur, 500);
+        assert!(lo < cur && cur < hi, 1);
+        assert!(math::btc_ratio_bps(cur, lo, hi) == 5000, 2);
+    }
 }
