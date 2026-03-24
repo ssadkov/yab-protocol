@@ -17,6 +17,23 @@ export function totalAssetsTokenAEquiv(
   return posEquiv + freeEquiv;
 }
 
+/**
+ * USDC → token-A equivalent raw (vault-style): two truncating divisions, not one on the sum.
+ * Matches `position_usdc * scale / price` + `free_usdc * scale / price`.
+ */
+export function usdcLegToTokenAEquivRaw(
+  positionUsdc: bigint,
+  freeUsdc: bigint,
+  btcPrice8dec: bigint,
+): bigint {
+  if (btcPrice8dec <= 0n) return 0n;
+  const scale = 100_000_000n;
+  return (
+    (positionUsdc * scale) / btcPrice8dec +
+    (freeUsdc * scale) / btcPrice8dec
+  );
+}
+
 const INITIAL_YAB_PRICE = 100_000_000n;
 
 /** Mirrors vault.move `get_yab_price` when supply > 0. */

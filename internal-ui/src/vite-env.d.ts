@@ -6,6 +6,7 @@ interface ImportMetaEnv {
   readonly VITE_VAULT_ADDRESS: string;
   readonly VITE_TOKEN_A_DECIMALS: string;
   readonly VITE_TOKEN_B_DECIMALS: string;
+  readonly VITE_YAB_DECIMALS: string;
   /** Optional: Aptos Developer Portal / provider API key (sent as `Authorization` / `x-aptos-api-key` per SDK) */
   readonly VITE_APTOS_API_KEY: string;
 }

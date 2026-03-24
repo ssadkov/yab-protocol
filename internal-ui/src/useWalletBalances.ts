@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getAptos } from "./aptosClient";
+import { VAULT_ADDRESS_NORMALIZED } from "./config";
 import { normalizeAccountAddress } from "./addresses";
 
 const BALANCE_VIEW = "0x1::primary_fungible_store::balance";
@@ -22,36 +23,51 @@ async function primaryBalance(
   return BigInt(String(result[0]));
 }
 
+/** `yabMetadataAddress` defaults to the vault object (YAB `Metadata` lives there). */
 export function useWalletBalances(
   owner: string | undefined,
   tokenAMetadata: string | undefined,
   tokenBMetadata: string | undefined,
+  yabMetadataAddress: string = VAULT_ADDRESS_NORMALIZED,
   pollMs = 12_000,
 ) {
   const [balanceA, setBalanceA] = useState<bigint | null>(null);
   const [balanceB, setBalanceB] = useState<bigint | null>(null);
+  const [balanceYab, setBalanceYab] = useState<bigint | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    if (!owner || !tokenAMetadata || !tokenBMetadata) {
+    if (!owner) {
       setBalanceA(null);
       setBalanceB(null);
+      setBalanceYab(null);
       return;
     }
     setError(null);
     try {
-      const [a, b] = await Promise.all([
+      const yabMeta = normalizeAccountAddress(yabMetadataAddress);
+      const yabPromise = primaryBalance(owner, yabMeta);
+      if (!tokenAMetadata || !tokenBMetadata) {
+        setBalanceA(null);
+        setBalanceB(null);
+        setBalanceYab(await yabPromise);
+        return;
+      }
+      const [a, b, y] = await Promise.all([
         primaryBalance(owner, tokenAMetadata),
         primaryBalance(owner, tokenBMetadata),
+        yabPromise,
       ]);
       setBalanceA(a);
       setBalanceB(b);
+      setBalanceYab(y);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setBalanceA(null);
       setBalanceB(null);
+      setBalanceYab(null);
     }
-  }, [owner, tokenAMetadata, tokenBMetadata]);
+  }, [owner, tokenAMetadata, tokenBMetadata, yabMetadataAddress]);
 
   useEffect(() => {
     void refresh();
@@ -59,5 +75,5 @@ export function useWalletBalances(
     return () => clearInterval(id);
   }, [refresh, pollMs]);
 
-  return { balanceA, balanceB, error, refresh };
+  return { balanceA, balanceB, balanceYab, error, refresh };
 }

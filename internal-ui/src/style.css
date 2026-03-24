@@ -71,6 +71,53 @@ body {
   font-size: 0.75rem;
 }
 
+.usd {
+  color: #b8e0c0;
+  font-weight: 600;
+}
+
+.hint-inline {
+  font-size: 0.72rem;
+  color: #6a7078;
+  font-weight: 400;
+}
+
+.nav-explainer {
+  font-size: 0.78rem;
+  color: #9aa0a6;
+  margin: 0 0 0.75rem;
+  line-height: 1.4;
+}
+
+.nav-explainer code {
+  font-size: 0.72rem;
+  color: #c9cdd4;
+}
+
+.nav-check {
+  font-size: 0.85rem;
+}
+
+.nav-total-dt {
+  align-self: end;
+}
+
+.nav-total-dd {
+  text-align: right;
+}
+
+.nav-usd-big {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: #c8f0d0;
+  letter-spacing: -0.02em;
+}
+
+.nav-sub {
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
+}
+
 .row-input {
   display: flex;
   gap: 0.5rem;

@@ -37,6 +37,10 @@ export const TOKEN_B_DECIMALS = Number(
   import.meta.env.VITE_TOKEN_B_DECIMALS ?? "6",
 );
 
+/** YAB FA metadata object = vault object; same 8-dec scale as on-chain YAB price */
+export const YAB_SYMBOL = "YAB";
+export const YAB_DECIMALS = Number(import.meta.env.VITE_YAB_DECIMALS ?? "8");
+
 export const VAULT_STATE_TYPE = `${MODULE_ADDRESS}::vault::VaultState` as const;
 
 /** On-chain minimums (vault.move) */

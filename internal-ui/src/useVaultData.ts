@@ -12,15 +12,32 @@ import { moveResourceData } from "./moveResourceData";
 import {
   parseFungibleSupplyView,
   totalAssetsTokenAEquiv,
+  usdcLegToTokenAEquivRaw,
   yabPriceRaw,
 } from "./vaultMath";
+import { fetchFungibleDecimals } from "./fungibleMetadata";
 
 export type VaultSnapshot = {
   tokenAMetadata: string;
   tokenBMetadata: string;
+  /** From `0x1::fungible_asset::Metadata` (env fallback if fetch fails) */
+  tokenADecimals: number;
+  tokenBDecimals: number;
+  /** BTC/USD used for NAV (8-decimal USD/BTC scale); from `oracle::btc_usd_price_safe` or fallback to cached */
+  btcUsdPriceRaw: bigint;
+  /** `position_btc` + `free_btc` (VaultState) */
   tokenARaw: bigint;
+  /** `position_usdc` + `free_usdc` */
   tokenBRaw: bigint;
+  positionBtcRaw: bigint;
+  positionUsdcRaw: bigint;
+  freeBtcRaw: bigint;
+  freeUsdcRaw: bigint;
+  /** USDC→token-A eq (two `/` like on-chain); `tokenARaw + usdcBtcEquivRaw === totalAssetsRaw` */
+  usdcBtcEquivRaw: bigint;
   totalAssetsRaw: bigint;
+  /** Total YAB supply (raw FA units); same view used for `yabPriceRaw` */
+  yabSupplyRaw: bigint;
   yabPriceRaw: bigint;
   centerPrice: bigint;
   lastRecordedPrice: bigint;
@@ -54,6 +71,14 @@ export function useVaultData(pollMs = 15_000) {
       const tokenBMetadata = normalizeAccountAddress(
         String(d.token_b_metadata ?? ""),
       );
+      const [tokenADecimals, tokenBDecimals] = await Promise.all([
+        fetchFungibleDecimals(aptos, tokenAMetadata).then(
+          (x) => x ?? TOKEN_A_DECIMALS,
+        ),
+        fetchFungibleDecimals(aptos, tokenBMetadata).then(
+          (x) => x ?? TOKEN_B_DECIMALS,
+        ),
+      ]);
       const posA = toBig(d.position_btc);
       const posB = toBig(d.position_usdc);
       const freeA = toBig(d.free_btc);
@@ -85,14 +110,24 @@ export function useVaultData(pollMs = 15_000) {
       const supply = parseFungibleSupplyView(supplyView);
 
       const total = totalAssetsTokenAEquiv(posA, posB, freeA, freeB, btcUsd);
+      const usdcBtcEquiv = usdcLegToTokenAEquivRaw(posB, freeB, btcUsd);
       const yabP = yabPriceRaw(total, supply);
 
       setData({
         tokenAMetadata,
         tokenBMetadata,
+        tokenADecimals,
+        tokenBDecimals,
+        btcUsdPriceRaw: btcUsd,
         tokenARaw: posA + freeA,
         tokenBRaw: posB + freeB,
+        positionBtcRaw: posA,
+        positionUsdcRaw: posB,
+        freeBtcRaw: freeA,
+        freeUsdcRaw: freeB,
+        usdcBtcEquivRaw: usdcBtcEquiv,
         totalAssetsRaw: total,
+        yabSupplyRaw: supply,
         yabPriceRaw: yabP,
         centerPrice: toBig(d.center_price),
         lastRecordedPrice: lastRec,
@@ -118,7 +153,7 @@ export function useVaultData(pollMs = 15_000) {
     error,
     loading,
     refresh,
-    tokenADecimals: TOKEN_A_DECIMALS,
-    tokenBDecimals: TOKEN_B_DECIMALS,
+    tokenADecimals: data?.tokenADecimals ?? TOKEN_A_DECIMALS,
+    tokenBDecimals: data?.tokenBDecimals ?? TOKEN_B_DECIMALS,
   };
 }

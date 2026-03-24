@@ -1,5 +1,5 @@
 import { useWallet } from "@aptos-labs/wallet-adapter-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   MIN_DEPOSIT_TOKEN_A,
   MIN_DEPOSIT_TOKEN_B_DUAL,
@@ -8,9 +8,20 @@ import {
   TOKEN_B_SYMBOL,
   VAULT_ADDRESS,
   VAULT_ADDRESS_NORMALIZED,
+  YAB_DECIMALS,
+  YAB_SYMBOL,
 } from "./config";
-import { formatRaw, parseToRaw } from "./format";
+import {
+  BTC_USD_ORACLE_DECIMALS,
+  formatBpsPercent,
+  formatRaw,
+  formatUsd,
+  parseToRaw,
+  usdFromBtcRawTimesOracle,
+  usdFromStableRaw,
+} from "./format";
 import { getAptos } from "./aptosClient";
+import { toEntryU64, transactionHashFromSubmit } from "./moveArgs";
 import { useVaultData } from "./useVaultData";
 import { useWalletBalances } from "./useWalletBalances";
 
@@ -32,6 +43,7 @@ export default function App() {
   const {
     balanceA,
     balanceB,
+    balanceYab,
     error: balErr,
     refresh: refreshBalances,
   } = useWalletBalances(
@@ -47,6 +59,34 @@ export default function App() {
   const [depositDualEdited, setDepositDualEdited] = useState(false);
   const [busy, setBusy] = useState(false);
   const [txMsg, setTxMsg] = useState<string | null>(null);
+
+  const navUsd = useMemo(() => {
+    if (!data) return null;
+    const p = data.btcUsdPriceRaw;
+    const wbtc = usdFromBtcRawTimesOracle(data.tokenARaw, p);
+    const usdcFace = usdFromStableRaw(data.tokenBRaw, tokenBDecimals);
+    const totalSpotUsd = wbtc + usdcFace;
+    const supply = data.yabSupplyRaw;
+    /** USD per 1 full YAB: same spot NAV as Total assets, pro-rata by supply. */
+    const yabUsdPerFull =
+      supply > 0n
+        ? (totalSpotUsd * 10 ** YAB_DECIMALS) / Number(supply)
+        : 0;
+    return {
+      wbtc,
+      usdcFace,
+      totalSpotUsd,
+      yabUsdPerFull,
+    };
+  }, [data, tokenBDecimals]);
+
+  /** Wallet YAB → USD: pro-rata share of spot pool value (`totalSpotUsd`), not on-chain BTC-eq NAV. */
+  const walletYabUsd = useMemo(() => {
+    if (!data || !navUsd || balanceYab == null || balanceYab === 0n) return null;
+    const supply = data.yabSupplyRaw;
+    if (supply === 0n) return null;
+    return (Number(balanceYab) / Number(supply)) * navUsd.totalSpotUsd;
+  }, [data, balanceYab, navUsd]);
 
   useEffect(() => {
     if (!connected) {
@@ -93,13 +133,12 @@ export default function App() {
         const pending = await signAndSubmitTransaction({
           data: {
             function: `${MODULE_ADDRESS}::vault::deposit`,
-            functionArguments: [VAULT_ADDRESS_NORMALIZED, raw],
+            functionArguments: [VAULT_ADDRESS_NORMALIZED, toEntryU64(raw)],
           },
         });
-        await aptos.waitForTransaction({
-          transactionHash: pending.hash,
-        });
-        setTxMsg(`deposit ok: ${pending.hash}`);
+        const txHash = transactionHashFromSubmit(pending);
+        await aptos.waitForTransaction({ transactionHash: txHash });
+        setTxMsg(`deposit ok: ${txHash}`);
       } else {
         const rawA = parseToRaw(depositDualA, tokenADecimals);
         const rawB = parseToRaw(depositDualB, tokenBDecimals);
@@ -116,13 +155,16 @@ export default function App() {
         const pending = await signAndSubmitTransaction({
           data: {
             function: `${MODULE_ADDRESS}::vault::deposit_dual`,
-            functionArguments: [VAULT_ADDRESS_NORMALIZED, rawA, rawB],
+            functionArguments: [
+              VAULT_ADDRESS_NORMALIZED,
+              toEntryU64(rawA),
+              toEntryU64(rawB),
+            ],
           },
         });
-        await aptos.waitForTransaction({
-          transactionHash: pending.hash,
-        });
-        setTxMsg(`deposit_dual ok: ${pending.hash}`);
+        const txHash = transactionHashFromSubmit(pending);
+        await aptos.waitForTransaction({ transactionHash: txHash });
+        setTxMsg(`deposit_dual ok: ${txHash}`);
       }
       await refresh();
       await refreshBalances();
@@ -144,43 +186,61 @@ export default function App() {
         <h2>Pool (on-chain)</h2>
         {loading && <p>Loading…</p>}
         {error && <p className="err">{error}</p>}
-        {data && (
-          <dl className="grid">
-            <dt>
-              {TOKEN_A_SYMBOL} in vault (position + free, raw units)
-            </dt>
+        {data && navUsd && (
+          <>
+            <p className="nav-explainer">
+              <strong>Total assets (USD)</strong> = all {TOKEN_A_SYMBOL} at BTC/USD + all{" "}
+              {TOKEN_B_SYMBOL} at $1 face (pos + free).
+            </p>
+            <dl className="grid">
+            <dt className="nav-total-dt">Total assets</dt>
+            <dd className="nav-total-dd">
+              <span className="nav-usd-big">{formatUsd(navUsd.totalSpotUsd)}</span>
+              <span className="muted nav-sub">
+                {" "}
+                {formatUsd(navUsd.wbtc)} {TOKEN_A_SYMBOL} + {formatUsd(navUsd.usdcFace)}{" "}
+                {TOKEN_B_SYMBOL} face
+              </span>
+              <div className="muted nav-sub">
+                Reserves: pos{" "}
+                {formatRaw(data.positionBtcRaw, tokenADecimals)} +{" "}
+                {formatRaw(data.positionUsdcRaw, tokenBDecimals)} {TOKEN_B_SYMBOL} · free{" "}
+                {formatRaw(data.freeBtcRaw, tokenADecimals)} +{" "}
+                {formatRaw(data.freeUsdcRaw, tokenBDecimals)} {TOKEN_B_SYMBOL}
+              </div>
+            </dd>
+            <dt>YAB / 1</dt>
             <dd>
-              {data.tokenARaw.toString()} raw
+              <span className="usd">{formatUsd(navUsd.yabUsdPerFull)}</span>
               <span className="muted">
                 {" "}
-                ≈ {formatRaw(data.tokenARaw, tokenADecimals)} {TOKEN_A_SYMBOL}
+                spot (supply {data.yabSupplyRaw.toString()} raw)
               </span>
             </dd>
-            <dt>
-              {TOKEN_B_SYMBOL} in vault (position + free, raw units)
-            </dt>
+            <dt>BTC/USD cache</dt>
             <dd>
-              {data.tokenBRaw.toString()} raw
+              <strong>
+                {formatRaw(
+                  data.lastRecordedPrice,
+                  BTC_USD_ORACLE_DECIMALS,
+                  8,
+                )}
+              </strong>
               <span className="muted">
                 {" "}
-                ≈ {formatRaw(data.tokenBRaw, tokenBDecimals)} {TOKEN_B_SYMBOL}
+                <span className="mono">{data.lastRecordedPrice.toString()}</span>
               </span>
             </dd>
-            <dt>Total assets ({TOKEN_A_SYMBOL} equivalent, computed)</dt>
+            <dt>Performance fee</dt>
             <dd>
-              {data.totalAssetsRaw.toString()} raw
+              {data.performanceFeeBps.toString()} bps
               <span className="muted">
                 {" "}
-                ≈ {formatRaw(data.totalAssetsRaw, tokenADecimals)} {TOKEN_A_SYMBOL}
+                ({formatBpsPercent(data.performanceFeeBps)})
               </span>
             </dd>
-            <dt>YAB price (raw, computed)</dt>
-            <dd>{data.yabPriceRaw.toString()}</dd>
-            <dt>Last recorded BTC/USD oracle</dt>
-            <dd>{data.lastRecordedPrice.toString()}</dd>
-            <dt>Performance fee (bps)</dt>
-            <dd>{data.performanceFeeBps.toString()}</dd>
           </dl>
+          </>
         )}
         <button
           type="button"
@@ -232,6 +292,21 @@ export default function App() {
                 <span className="muted">
                   {" "}
                   — {balanceB.toString()} raw
+                </span>
+              </p>
+            )}
+            {balanceYab != null && (
+              <p className="bal-line">
+                {YAB_SYMBOL} (FA primary store):{" "}
+                <strong>
+                  {formatRaw(balanceYab, YAB_DECIMALS)} {YAB_SYMBOL}
+                </strong>
+                {walletYabUsd != null && (
+                  <span className="usd"> ≈ {formatUsd(walletYabUsd)}</span>
+                )}
+                <span className="muted">
+                  {" "}
+                  — {balanceYab.toString()} raw
                 </span>
               </p>
             )}
