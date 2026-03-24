@@ -1106,6 +1106,19 @@ module yab::vault {
         event::emit(RewardsClaimed { btc_received, timestamp: timestamp::now_seconds() });
     }
 
+    /// Same as `claim_rewards`, but refreshes Pyth cache in the same transaction.
+    /// Useful when the on-chain Pyth cache may be stale.
+    public entry fun claim_rewards_with_pyth_update(
+        operator: &signer,
+        vault_addr: address,
+        pyth_update_data: vector<vector<u8>>,
+    ) acquires VaultState, VaultStrategy {
+        let update_fee = pyth::get_update_fee(&pyth_update_data);
+        let fee_coin = coin::withdraw<aptos_coin::AptosCoin>(operator, update_fee);
+        pyth::update_price_feeds(pyth_update_data, fee_coin);
+        claim_rewards(operator, vault_addr);
+    }
+
     /// Operator: full rebalance — exit position, re-split per oracle, open new range (ticks from off-chain).
     public entry fun rebalance(
         operator: &signer,
