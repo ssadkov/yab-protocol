@@ -1,0 +1,85 @@
+# Withdraw and `claim_rewards` — behavior and how to test (mainnet)
+
+Module package: `0xd42e699a4b22880d77da7dd02bb2fa768ecaa8cb1c4aa1423f968f480c97a60b`  
+Example vault object: `0x599b04f9fc1c3702da76430d96a7962adbafd76941fe980d12e0bc0033f1379c`
+
+---
+
+## `withdraw` — any user with YAB
+
+**Who:** the user (holder of YAB), **not** the operator.
+
+**What it does:**
+
+1. Reads **oracle** price (`oracle::get_safe_price`) and updates `last_recorded_price`.
+2. Computes **YAB NAV** in token-A terms (`get_yab_price` — WBTC-equivalent per 1 YAB).
+3. **Performance fee (only on profit):** if `UserCheckpoint.entry_price` exists and current YAB price is higher, fee is taken as a **mint of extra YAB to `treasury`** (not a direct WBTC transfer from the user). The user’s **WBTC payout** is reduced by the fee amount expressed in WBTC.
+4. **Payout asset:** users always receive **token A (WBTC)** on withdrawal, not USDC.
+5. **Order of funding the payout:**
+   - First: **`free_btc`** (vault’s idle WBTC).
+   - If not enough: **proportional removal** from the Hyperion position (`remove_liquidity_by_contract`), then any USDC returned is **swapped toward token A** inside the pool and sent to the user.
+6. **Burn:** the user’s **`shares_in`** YAB is burned from their primary store.
+
+**Entry:**
+
+```text
+vault::withdraw(user, vault_addr, shares_in)
+```
+
+**Events:** `Withdrawn { user, shares_burned, btc_out }` (`btc_out` is the net WBTC to the user after performance fee).
+
+**Testing (CLI sketch):**
+
+```bash
+# Replace SHARES with YAB amount to burn (same decimals as YAB metadata, 8).
+aptos move run \
+  --profile <YOUR_WALLET> \
+  --network mainnet \
+  --function-id 0xd42e699a4b22880d77da7dd02bb2fa768ecaa8cb1c4aa1423f968f480c97a60b::vault::withdraw \
+  --args address:0x599b04f9fc1c3702da76430d96a7962adbafd76941fe980d12e0bc0033f1379c u64:<SHARES>
+```
+
+**Checks:** WBTC balance of the wallet increases (minus gas), YAB balance drops by `shares_in`, explorer shows `Withdrawn` event.
+
+**Note:** With the current **mock oracle**, `get_safe_price` returns a fixed `MOCK_BTC_USD`; NAV is deterministic. After **Pyth**, the same flow applies but prices come from the feed + guards.
+
+---
+
+## `claim_rewards` — operator or admin only
+
+**Who:** `operator` or `admin` from `VaultState` (not regular LPs).
+
+**What it does:**
+
+1. Asserts vault is bootstrapped (`position_address != 0x0`).
+2. Calls **`oracle::get_safe_price`** and updates `last_recorded_price`.
+3. **`pool_v3::claim_fees`** — accrued trading fees on the CLMM position → credited to **`free_btc` / `free_usdc`** (vault primary store).
+4. **`pool_v3::claim_rewards`** — gauge / incentive tokens → **`process_reward_assets`** (swap non–token-A assets toward policy; see implementation).
+5. Emits **`RewardsClaimed { btc_received, timestamp }`** where `btc_received` is **Δ`free_btc`** since entry (name is historical; some paths may increase `free_usdc` instead).
+
+**Entry:**
+
+```text
+vault::claim_rewards(operator, vault_addr)
+```
+
+**Testing (CLI sketch):**
+
+```bash
+aptos move run \
+  --profile <OPERATOR_OR_ADMIN> \
+  --network mainnet \
+  --function-id 0xd42e699a4b22880d77da7dd02bb2fa768ecaa8cb1c4aa1423f968f480c97a60b::vault::claim_rewards \
+  --args address:0x599b04f9fc1c3702da76430d96a7962adbafd76941fe980d12e0bc0033f1379c
+```
+
+**Checks:** `VaultState.free_btc` / `free_usdc` increase if there were unclaimed fees; event `RewardsClaimed` emitted. If the position had no fees yet, gas is still spent but deltas may be zero.
+
+---
+
+## Suggested test order
+
+1. **`claim_rewards`** with the **operator** wallet — verifies Hyperion fee/reward paths and vault accounting (optional if fees are still negligible).
+2. **`withdraw`** with a **small** `shares_in` — verifies burn, NAV, and WBTC delivery; confirm performance fee only if YAB price &gt; your `UserCheckpoint.entry_price`.
+
+Record successful tx hashes in `docs/MAINNET.md` like the deposit smoke test.

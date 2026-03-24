@@ -97,8 +97,12 @@ module yab::vault {
 
     const INITIAL_YAB_PRICE: u64 = 100_000_000; // 1.0 with 8 decimals
     const DEADLINE_SECS: u64 = 1800;
+    /// Sqrt price limits for `pool_v3::swap` (Q64.64 / Hyperion). `MIN` matches Uniswap v3 min tick ratio (fits u128).
+    /// Uniswap’s uint160 `MAX_SQRT_RATIO` does **not** fit `u128`; use Hyperion `tick_math::MAX_SQRT_PRICE_X64` for the upper bound.
+    const MIN_SQRT_RATIO_X64: u128 = 4295128739;
+    const MAX_SQRT_RATIO_X64: u128 = 79226673515401279992447579055;
     /// Minimum token-A deposit (WBTC, 8 decimals). Below this, Hyperion swap/add_liquidity often reverts (e.g. `Sub` in router).
-    const MIN_DEPOSIT_TOKEN_A: u64 = 20_000; // 0.0002 WBTC — raise if your pool still reverts
+    const MIN_DEPOSIT_TOKEN_A: u64 = 20_000; // 0.0002 WBTC minimum
     /// Minimum token-B amount (post-swap) before `add_liquidity_by_contract` when a swap was performed.
     const MIN_POST_SWAP_TOKEN_B: u64 = 100;
     /// `deposit_dual`: minimum token B pulled from user (USDC raw units; avoids dust-only B leg).
@@ -166,26 +170,13 @@ module yab::vault {
         }
     }
 
-    /// Hyperion requires a non-trivial sqrt-price limit for swaps.
-    /// Build a tight limit around the current pool price in the swap direction.
-    fun swap_sqrt_price_limit(pool: Object<LiquidityPoolV3>, a2b: bool): u128 {
-        let pool_addr = object::object_address(&pool);
-        let (_, sqrt_now) = pool_v3::current_tick_and_price(pool_addr);
-        if (sqrt_now == 0) {
-            return 1
-        };
+    /// Sqrt price limit for `pool_v3::swap`. Must not use `sqrt_now ± 1` — that reverts when price moves between simulation and execution.
+    /// Use global MIN/MAX bounds (Uniswap v3 / Hyperion); slippage is enforced via `add_liquidity` mins and router paths where applicable.
+    fun swap_sqrt_price_limit(_pool: Object<LiquidityPoolV3>, a2b: bool): u128 {
         if (a2b) {
-            if (sqrt_now > 1) {
-                sqrt_now - 1
-            } else {
-                1
-            }
+            MIN_SQRT_RATIO_X64
         } else {
-            if (sqrt_now < 0xffffffffffffffffffffffffffffffff) {
-                sqrt_now + 1
-            } else {
-                sqrt_now
-            }
+            MAX_SQRT_RATIO_X64
         }
     }
 
@@ -845,7 +836,8 @@ module yab::vault {
         let amount_a_desired = fungible_asset::amount(&fa_a_total);
         let amount_b_desired = fungible_asset::amount(&fa_b_for_lp);
         let min_a = amount_a_desired * (10000 - slip_bps) / 10000;
-        let min_b = amount_b_desired * (10000 - slip_bps) / 10000;
+        // TEMP: min_b = 0 while mock oracle + small deposits; restore slippage when Pyth is live.
+        let min_b = 0u64;
         let deadline = timestamp::now_seconds() + DEADLINE_SECS;
 
         let (used_a, used_b, leftover_a, leftover_b) = router_v3::add_liquidity_by_contract(

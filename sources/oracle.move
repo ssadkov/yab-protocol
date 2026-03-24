@@ -3,9 +3,9 @@ module yab::oracle {
 
     // MOCK_ORACLE — replace with Pyth before mainnet deployment.
 
-    /// Fixed BTC/USD price (8 decimals, same scale as production oracle reads).
-    // Tuned for current APT/SUV testnet pool so strategy range math remains in-bounds during bootstrap.
-    const MOCK_BTC_USD: u64 = 10_978_008_776_339_308_900;
+    /// Fixed BTC/USD price: USD per 1 BTC with 8 fractional digits (same scale as Pyth magnitude).
+    /// Example: $83,000 => 83_000 * 100_000_000 = 8_300_000_000_000.
+    const MOCK_BTC_USD: u64 = 8_300_000_000_000;
 
     // Governance can later move these into VaultConfig.
     const MAX_PRICE_AGE_SECS: u64 = 60;
