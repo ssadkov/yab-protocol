@@ -5,6 +5,8 @@ module yab::vault {
     use std::vector;
 
     use aptos_framework::event;
+    use aptos_framework::aptos_coin;
+    use aptos_framework::coin;
     use aptos_framework::fungible_asset::{Self, FungibleAsset, Metadata, MintRef, BurnRef, TransferRef};
     use aptos_framework::object::{Self, Object, ExtendRef};
     use aptos_framework::primary_fungible_store;
@@ -13,6 +15,7 @@ module yab::vault {
     use dex_contract::pool_v3::{Self, LiquidityPoolV3};
     use dex_contract::position_v3;
     use dex_contract::router_v3;
+    use pyth::pyth;
 
     use yab::errors;
     use yab::math;
@@ -884,6 +887,20 @@ module yab::vault {
         withdraw_impl(user, vault_addr, shares_in, option::none());
     }
 
+    /// Same as `withdraw`, but refreshes Pyth cache in the same transaction.
+    /// `pyth_update_data` must be fetched from Hermes right before submit.
+    public entry fun withdraw_with_pyth_update(
+        user: &signer,
+        vault_addr: address,
+        shares_in: u64,
+        pyth_update_data: vector<vector<u8>>,
+    ) acquires VaultState, YabRefs, UserCheckpoint {
+        let update_fee = pyth::get_update_fee(&pyth_update_data);
+        let fee_coin = coin::withdraw<aptos_coin::AptosCoin>(user, update_fee);
+        pyth::update_price_feeds(pyth_update_data, fee_coin);
+        withdraw_impl(user, vault_addr, shares_in, option::none());
+    }
+
     #[test_only]
     public fun withdraw_with_fixed_oracle(
         user: &signer,
@@ -1317,6 +1334,23 @@ module yab::vault {
             rebalance_trigger_bps,
             max_swap_slippage_bps,
         );
+    }
+
+    /// One-time (or emergency) baseline sync after switching oracle mode.
+    /// Refreshes Pyth cache and writes current BTC/USD into `last_recorded_price`
+    /// without deviation comparison vs old baseline.
+    public entry fun sync_oracle_baseline_with_pyth_update(
+        admin: &signer,
+        vault_addr: address,
+        pyth_update_data: vector<vector<u8>>,
+    ) acquires VaultState {
+        let update_fee = pyth::get_update_fee(&pyth_update_data);
+        let fee_coin = coin::withdraw<aptos_coin::AptosCoin>(admin, update_fee);
+        pyth::update_price_feeds(pyth_update_data, fee_coin);
+
+        let state = borrow_global_mut<VaultState>(vault_addr);
+        assert!(signer::address_of(admin) == state.admin, errors::not_admin());
+        state.last_recorded_price = oracle::btc_usd_price_pyth_only();
     }
 
     // Read helpers (not `#[view]`): bytecode verifier rejects mixed view/non-view call graphs with Pyth + acquires.

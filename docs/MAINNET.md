@@ -25,7 +25,7 @@
 
 1. **USDC deposit path** — implement and/or validate user flow for depositing **USDC** (token B) into the vault, not only WBTC (token A). Includes UI/SDK and on-chain `deposit_dual` or equivalent if that is the intended entrypoint.
 
-2. **Production oracle** — replace the mock `MOCK_BTC_USD` path with **Pyth** (or the chosen feed): wire `oracle::get_safe_price` to live price data, keep deviation/staleness/confidence guards, and remove temporary liquidity `min_b = 0` workarounds once prices are trustworthy.
+2. **Production oracle** — **done** in `oracle.move` (Pyth BTC/USD + views). Operators must still **bundle Hermes price updates** in txs when the on-chain cache is stale (see [`PYTH_ORACLE.md`](./PYTH_ORACLE.md)). Consider restoring strict `min_b` on `add_liquidity` after live-oracle validation.
 
 3. **Withdraw & claim smoke tests** — run `vault::withdraw` (user wallet, burn YAB → receive WBTC) and `vault::claim_rewards` (operator/admin). See [`WITHDRAW_AND_CLAIM.md`](./WITHDRAW_AND_CLAIM.md) for behavior and CLI examples; paste tx hashes here when done.
 

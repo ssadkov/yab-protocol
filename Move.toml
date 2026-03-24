@@ -14,6 +14,9 @@ authors = []
 yab = "0xd42e699a4b22880d77da7dd02bb2fa768ecaa8cb1c4aa1423f968f480c97a60b"
 dex_contract = "0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c"
 deployer = "0xb31e712b26fd295357355f6845e77c888298636609e93bc9b05f0f604049f434"
+# Pyth on Aptos mainnet — https://docs.pyth.network/price-feeds/core/use-real-time-data/aptos
+pyth = "0x7e783b349d3e89cf5931af376ebeadbfab855b3fa239b7ada8f5a92fbea6b387"
+wormhole = "0x5bc11445584a763c1fa7ed39081f1b920954da14e04b32440cba863d03e19625"
 
 [dev-addresses]
 
@@ -32,5 +35,11 @@ rev = "2c74a456298fcd520241a562119b6fe30abdaae2"
 [dependencies.dex]
 git = "https://github.com/Hyperfluid/hyperfluid-interface.git"
 rev = "595fec8db8c9bd9aa7050f7342f316d48f722108"
+
+# Pyth price feeds (depends on Wormhole + Deployer — resolved transitively).
+[dependencies.Pyth]
+git = "https://github.com/pyth-network/pyth-crosschain.git"
+subdir = "target_chains/aptos/contracts"
+rev = "main"
 
 [dev-dependencies]
