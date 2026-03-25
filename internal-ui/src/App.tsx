@@ -40,13 +40,13 @@ export default function App() {
     wallets,
   } = useWallet();
   const { data, error, loading, refresh, tokenADecimals, tokenBDecimals } =
-    useVaultData();
+    useVaultData(60_000);
   const {
     positions: hyperionPositions,
     loading: hyperionLoading,
     error: hyperionError,
     refresh: refreshHyperion,
-  } = useHyperionVaultPosition();
+  } = useHyperionVaultPosition(60_000);
 
   const owner =
     connected && account ? String(account.address) : undefined;
@@ -61,6 +61,8 @@ export default function App() {
     owner,
     data?.tokenAMetadata,
     data?.tokenBMetadata,
+    undefined,
+    60_000,
   );
 
   const [depositA, setDepositA] = useState("");
