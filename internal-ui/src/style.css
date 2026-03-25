@@ -193,3 +193,40 @@ body {
   word-break: break-word;
   color: #8cf0a0;
 }
+
+a.link {
+  color: #8ab4f8;
+  text-decoration: none;
+}
+
+a.link:hover {
+  text-decoration: underline;
+}
+
+.hyperion-pos {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #2a2f38;
+}
+
+.hyperion-pos:first-of-type {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.hyperion-pos-head {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+}
+
+.hyperion-pos .grid dd {
+  text-align: left;
+}
+
+ul.hyperion-fee-list {
+  margin: 0;
+  padding-left: 1rem;
+  font-size: 0.82rem;
+  text-align: left;
+}

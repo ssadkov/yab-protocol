@@ -1,0 +1,10 @@
+{
+  "framework": "vite",
+  "installCommand": "cd internal-ui && npm ci",
+  "buildCommand": "cd internal-ui && npm run build",
+  "outputDirectory": "internal-ui/dist",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
+

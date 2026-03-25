@@ -20,8 +20,13 @@ import {
   usdFromBtcRawTimesOracle,
   usdFromStableRaw,
 } from "./format";
+import { shortAddress } from "./addresses";
 import { getAptos } from "./aptosClient";
 import { toEntryU64, transactionHashFromSubmit } from "./moveArgs";
+import {
+  feeTokenLabel,
+  useHyperionVaultPosition,
+} from "./useHyperionVaultPosition";
 import { useVaultData } from "./useVaultData";
 import { useWalletBalances } from "./useWalletBalances";
 
@@ -36,6 +41,12 @@ export default function App() {
   } = useWallet();
   const { data, error, loading, refresh, tokenADecimals, tokenBDecimals } =
     useVaultData();
+  const {
+    positions: hyperionPositions,
+    loading: hyperionLoading,
+    error: hyperionError,
+    refresh: refreshHyperion,
+  } = useHyperionVaultPosition();
 
   const owner =
     connected && account ? String(account.address) : undefined;
@@ -168,6 +179,7 @@ export default function App() {
       }
       await refresh();
       await refreshBalances();
+      await refreshHyperion();
     } catch (e) {
       setTxMsg(e instanceof Error ? e.message : String(e));
     } finally {
@@ -246,6 +258,116 @@ export default function App() {
           type="button"
           className="btn secondary"
           onClick={() => void refresh()}
+        >
+          Refresh
+        </button>
+      </section>
+
+      <section className="card">
+        <h2>Hyperion (CLMM)</h2>
+        <p className="muted nav-sub">
+          Indexer:{" "}
+          <a
+            href={`https://yieldai.app/api/protocols/hyperion/userPositions?address=${encodeURIComponent(VAULT_ADDRESS_NORMALIZED)}`}
+            target="_blank"
+            rel="noreferrer"
+            className="link"
+          >
+            userPositions
+          </a>{" "}
+          · vault {shortAddress(VAULT_ADDRESS)}
+        </p>
+        {hyperionLoading && <p>Loading…</p>}
+        {hyperionError && <p className="err">{hyperionError}</p>}
+        {!hyperionLoading && !hyperionError && hyperionPositions.length === 0 && (
+          <p className="muted">No positions returned for this vault address.</p>
+        )}
+        {hyperionPositions.map((hp, idx) => {
+          const pool = hp.position.pool;
+          const poolLabel = `${pool.token1Info.symbol} / ${pool.token2Info.symbol}`;
+          const explorerNet =
+            (import.meta.env.VITE_NETWORK ?? "mainnet").toLowerCase();
+          const objUrl = `https://explorer.aptoslabs.com/object/${encodeURIComponent(hp.position.objectId)}?network=${explorerNet}`;
+          return (
+            <div key={hp.position.objectId ?? idx} className="hyperion-pos">
+              <p className="hyperion-pos-head">
+                <span className="usd">
+                  ≈ $
+                  {Number(hp.value).toLocaleString("en-US", {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}
+                </span>
+                <span className="muted">
+                  {" "}
+                  · {hp.isActive ? "active" : "inactive"} · {poolLabel} · fee tier{" "}
+                  {pool.feeTier}
+                </span>
+              </p>
+              <dl className="grid">
+                <dt>Tick range</dt>
+                <dd>
+                  {hp.position.tickLower} … {hp.position.tickUpper}{" "}
+                  <span className="muted">
+                    (pool tick {pool.currentTick})
+                  </span>
+                </dd>
+                <dt>Position</dt>
+                <dd>
+                  <a href={objUrl} target="_blank" rel="noreferrer" className="link mono">
+                    {shortAddress(hp.position.objectId)}
+                  </a>
+                </dd>
+                <dt>Unclaimed fees</dt>
+                <dd>
+                  {(hp.fees?.unclaimed ?? []).length === 0 ? (
+                    <span className="muted">—</span>
+                  ) : (
+                    <ul className="hyperion-fee-list">
+                      {(hp.fees?.unclaimed ?? []).map((f) => (
+                        <li key={f.token}>
+                          {feeTokenLabel(pool, f.token)}:{" "}
+                          <span className="usd">
+                            $
+                            {Number(f.amountUSD).toLocaleString("en-US", {
+                              maximumFractionDigits: 6,
+                            })}
+                          </span>
+                          <span className="muted"> · raw {f.amount}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </dd>
+                <dt>Farm (unclaimed)</dt>
+                <dd>
+                  {(hp.farm?.unclaimed ?? []).length === 0 ? (
+                    <span className="muted">—</span>
+                  ) : (
+                    <ul className="hyperion-fee-list">
+                      {(hp.farm?.unclaimed ?? []).map((f) => (
+                        <li key={`farm-${f.token}`}>
+                          {feeTokenLabel(pool, f.token)}:{" "}
+                          <span className="usd">
+                            $
+                            {Number(f.amountUSD).toLocaleString("en-US", {
+                              maximumFractionDigits: 6,
+                            })}
+                          </span>
+                          <span className="muted"> · raw {f.amount}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </dd>
+              </dl>
+            </div>
+          );
+        })}
+        <button
+          type="button"
+          className="btn secondary"
+          onClick={() => void refreshHyperion()}
         >
           Refresh
         </button>
