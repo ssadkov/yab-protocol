@@ -52,9 +52,14 @@ function hyperionPositionsUrl(): string {
     const sep = custom.includes("?") ? "&" : "?";
     return `${custom}${sep}address=${encodeURIComponent(VAULT_ADDRESS_NORMALIZED)}`;
   }
+  /**
+   * In browsers, `yieldai.app` is typically blocked by CORS when called directly.
+   * Default to same-origin proxy in production when available (Vercel rewrite),
+   * and allow opting out via `VITE_HYPERION_USE_PROXY=false`.
+   */
   const useProxy =
     import.meta.env.DEV ||
-    import.meta.env.VITE_HYPERION_USE_PROXY === "true";
+    (import.meta.env.PROD && import.meta.env.VITE_HYPERION_USE_PROXY !== "false");
   if (useProxy) {
     return `/api/yieldai/api/protocols/hyperion/userPositions${q}`;
   }
