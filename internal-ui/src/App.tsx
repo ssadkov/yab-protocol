@@ -268,7 +268,7 @@ export default function App() {
         <p className="muted nav-sub">
           Indexer:{" "}
           <a
-            href={`https://yieldai.app/api/protocols/hyperion/userPositions?address=${encodeURIComponent(VAULT_ADDRESS_NORMALIZED)}`}
+            href={`/api/yieldai/api/protocols/hyperion/userPositions?address=${encodeURIComponent(VAULT_ADDRESS_NORMALIZED)}`}
             target="_blank"
             rel="noreferrer"
             className="link"

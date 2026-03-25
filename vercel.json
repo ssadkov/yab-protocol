@@ -4,6 +4,10 @@
   "buildCommand": "cd internal-ui && npm run build",
   "outputDirectory": "internal-ui/dist",
   "rewrites": [
+    {
+      "source": "/api/yieldai/(.*)",
+      "destination": "https://yieldai.app/$1"
+    },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
