@@ -220,6 +220,26 @@ a.link:hover {
   font-size: 0.9rem;
 }
 
+.hyperion-status {
+  display: inline-block;
+  padding: 0.08rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  vertical-align: baseline;
+}
+
+.hyperion-status.active {
+  color: #0b3d1e;
+  background: #7fe3a1;
+}
+
+.hyperion-status.inactive {
+  color: #3b1111;
+  background: #ffb4b4;
+}
+
 .hyperion-pos .grid dd {
   text-align: left;
 }

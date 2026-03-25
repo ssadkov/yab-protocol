@@ -300,8 +300,15 @@ export default function App() {
                 </span>
                 <span className="muted">
                   {" "}
-                  · {hp.isActive ? "active" : "inactive"} · {poolLabel} · fee tier{" "}
-                  {pool.feeTier}
+                  ·{" "}
+                  <span
+                    className={
+                      hp.isActive ? "hyperion-status active" : "hyperion-status inactive"
+                    }
+                  >
+                    {hp.isActive ? "Active" : "Inactive"}
+                  </span>{" "}
+                  · {poolLabel} · fee tier {pool.feeTier}
                 </span>
               </p>
               <dl className="grid">
