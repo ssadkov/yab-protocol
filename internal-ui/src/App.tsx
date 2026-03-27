@@ -245,7 +245,7 @@ export default function App() {
                 <span className="mono">{data.lastRecordedPrice.toString()}</span>
               </span>
             </dd>
-            <dt>Performance fee</dt>
+            <dt>Performance fee (harvest only)</dt>
             <dd>
               {data.performanceFeeBps.toString()} bps
               <span className="muted">

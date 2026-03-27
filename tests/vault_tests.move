@@ -24,11 +24,11 @@ module yab::vault_tests {
         let admin_addr = signer::address_of(admin);
         setup_vault(admin);
         let va = vault_object_address(admin_addr);
-        let (center, last_rec, last_rb, fee) = vault::get_vault_state(va);
+        let (center, last_rec, last_rb, perf_bps) = vault::get_vault_state(va);
         assert!(center == 0, 1);
         assert!(last_rec == 0, 2);
         assert!(last_rb == 0, 3);
-        assert!(fee == 1000, 4);
+        assert!(perf_bps == 1000, 4);
     }
 
     #[test(admin = @0xAAD)]

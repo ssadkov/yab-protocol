@@ -56,10 +56,11 @@ module yab::vault {
         center_price: u64,
         last_rebalance_ts: u64,
         last_recorded_price: u64,
+        /// Protocol cut on CLMM fees + gauge rewards credited in `claim_rewards` / fee leg of `rebalance` (bps per token A / B leg). Not charged on `withdraw`.
         performance_fee_bps: u64,
     }
 
-    /// Per-user deposit checkpoint for performance fee accounting.
+    /// Per-user deposit checkpoint (entry YAB price in token-A units; for analytics / future use).
     struct UserCheckpoint has key {
         entry_price: u64,
     }
@@ -95,6 +96,13 @@ module yab::vault {
     #[event]
     struct RewardsClaimed has drop, store {
         btc_received: u64,
+        timestamp: u64,
+    }
+
+    #[event]
+    struct HarvestFeeCollected has drop, store {
+        protocol_btc: u64,
+        protocol_usdc: u64,
         timestamp: u64,
     }
 
@@ -218,11 +226,53 @@ module yab::vault {
                     fungible_asset::destroy_zero(fa);
                 };
             } else {
-                primary_fungible_store::deposit(vault_addr, fa);
-                assert!(false, errors::unsupported_token());
+                // Incentive token not in the pool pair (e.g. partner token): credit treasury so rebalance can proceed.
+                primary_fungible_store::deposit(state.treasury, fa);
             };
         };
         vector::destroy_empty(v);
+    }
+
+    /// Send `performance_fee_bps` of the delta in `free_btc` / `free_usdc` since `free_*_before` to `treasury`.
+    /// Call immediately after `claim_fees` + `process_reward_assets` (no other mutations to `free_*` in between).
+    fun take_harvest_protocol_cut(
+        vault_signer: &signer,
+        _vault_obj: address,
+        treasury: address,
+        fee_bps: u64,
+        meta_a: Object<Metadata>,
+        meta_b: Object<Metadata>,
+        free_btc_before: u64,
+        free_usdc_before: u64,
+        state: &mut VaultState,
+    ): u64 {
+        if (fee_bps == 0) {
+            return state.free_btc - free_btc_before
+        };
+        let delta_btc = state.free_btc - free_btc_before;
+        let delta_usdc = state.free_usdc - free_usdc_before;
+        let cut_btc = delta_btc * fee_bps / 10000;
+        let cut_usdc = delta_usdc * fee_bps / 10000;
+        if (cut_btc > 0) {
+            let fa = primary_fungible_store::withdraw(vault_signer, meta_a, cut_btc);
+            state.free_btc = state.free_btc - cut_btc;
+            primary_fungible_store::deposit(treasury, fa);
+        };
+        if (cut_usdc > 0) {
+            let fa_b = primary_fungible_store::withdraw(vault_signer, meta_b, cut_usdc);
+            state.free_usdc = state.free_usdc - cut_usdc;
+            primary_fungible_store::deposit(treasury, fa_b);
+        };
+        let protocol_btc = cut_btc;
+        let protocol_usdc = cut_usdc;
+        if (protocol_btc > 0 || protocol_usdc > 0) {
+            event::emit(HarvestFeeCollected {
+                protocol_btc,
+                protocol_usdc,
+                timestamp: timestamp::now_seconds(),
+            });
+        };
+        state.free_btc - free_btc_before
     }
 
     /// One-time setup: named vault object, YAB fungible asset, ExtendRef for Hyperion `&signer`.
@@ -878,12 +928,12 @@ module yab::vault {
         event::emit(Deposited { user: user_addr, btc_in: token_a_in, shares_minted: shares });
     }
 
-    /// Burn YAB and receive token A; performance fee mints extra YAB to treasury when in profit.
+    /// Burn YAB and receive token A (no withdraw performance fee; see `performance_fee_bps` on harvest only).
     public entry fun withdraw(
         user: &signer,
         vault_addr: address,
         shares_in: u64,
-    ) acquires VaultState, YabRefs, UserCheckpoint {
+    ) acquires VaultState, YabRefs {
         withdraw_impl(user, vault_addr, shares_in, option::none());
     }
 
@@ -894,7 +944,7 @@ module yab::vault {
         vault_addr: address,
         shares_in: u64,
         pyth_update_data: vector<vector<u8>>,
-    ) acquires VaultState, YabRefs, UserCheckpoint {
+    ) acquires VaultState, YabRefs {
         let update_fee = pyth::get_update_fee(&pyth_update_data);
         let fee_coin = coin::withdraw<aptos_coin::AptosCoin>(user, update_fee);
         pyth::update_price_feeds(pyth_update_data, fee_coin);
@@ -907,7 +957,7 @@ module yab::vault {
         vault_addr: address,
         shares_in: u64,
         btc_usd_price: u64,
-    ) acquires VaultState, YabRefs, UserCheckpoint {
+    ) acquires VaultState, YabRefs {
         withdraw_impl(user, vault_addr, shares_in, option::some(btc_usd_price));
     }
 
@@ -916,7 +966,7 @@ module yab::vault {
         vault_addr: address,
         shares_in: u64,
         price_override: option::Option<u64>,
-    ) acquires VaultState, YabRefs, UserCheckpoint {
+    ) acquires VaultState, YabRefs {
         assert!(shares_in > 0, errors::zero_amount());
         let user_addr = signer::address_of(user);
 
@@ -930,19 +980,6 @@ module yab::vault {
             get_yab_price(s, vault_addr, btc_price)
         };
 
-        let perf_bps = { let s = borrow_global<VaultState>(vault_addr); s.performance_fee_bps };
-
-        let (fee_btc, fee_shares) = if (exists<UserCheckpoint>(user_addr)) {
-            let chk = borrow_global<UserCheckpoint>(user_addr);
-            if (yab_price > chk.entry_price) {
-                let profit_per_share = yab_price - chk.entry_price;
-                let total_profit = profit_per_share * shares_in / 100_000_000;
-                let fb = total_profit * perf_bps / 10000;
-                let fs = fb * 100_000_000 / yab_price;
-                (fb, fs)
-            } else { (0u64, 0u64) }
-        } else { (0u64, 0u64) };
-
         let (meta_a, meta_b, fee_tier_val, pos_addr) = {
             let s = borrow_global<VaultState>(vault_addr);
             (
@@ -954,19 +991,12 @@ module yab::vault {
         };
         let pool = pool_v3::liquidity_pool(meta_a, meta_b, fee_tier_val);
 
-        let btc_owed_gross = shares_in * yab_price / 100_000_000;
-        let btc_owed = btc_owed_gross - fee_btc;
+        let btc_owed = shares_in * yab_price / 100_000_000;
 
         let state = borrow_global_mut<VaultState>(vault_addr);
         state.last_recorded_price = btc_price;
 
         let vault_signer = object::generate_signer_for_extending(&state.extend_ref);
-
-        if (fee_shares > 0) {
-            let refs = borrow_global<YabRefs>(vault_addr);
-            let fee_fa = fungible_asset::mint(&refs.mint_ref, fee_shares);
-            primary_fungible_store::deposit(state.treasury, fee_fa);
-        };
 
         let need_after_free = if (state.free_btc >= btc_owed) {
             let fa = primary_fungible_store::withdraw(&vault_signer, meta_a, btc_owed);
@@ -1073,6 +1103,7 @@ module yab::vault {
         };
 
         let free_btc_before = { let s = borrow_global<VaultState>(vault_addr); s.free_btc };
+        let free_usdc_before = { let s = borrow_global<VaultState>(vault_addr); s.free_usdc };
 
         let btc_price = {
             let s = borrow_global<VaultState>(vault_addr);
@@ -1102,7 +1133,19 @@ module yab::vault {
         let rewards = pool_v3::claim_rewards(&vault_signer, pos);
         process_reward_assets(rewards, pool, meta_a, meta_b, slip_bps, vault_addr, state);
 
-        let btc_received = state.free_btc - free_btc_before;
+        let fee_bps = state.performance_fee_bps;
+        let treasury_addr = state.treasury;
+        let btc_received = take_harvest_protocol_cut(
+            &vault_signer,
+            vault_addr,
+            treasury_addr,
+            fee_bps,
+            meta_a,
+            meta_b,
+            free_btc_before,
+            free_usdc_before,
+            state,
+        );
         event::emit(RewardsClaimed { btc_received, timestamp: timestamp::now_seconds() });
     }
 
@@ -1178,6 +1221,9 @@ module yab::vault {
         let pos = object::address_to_object<position_v3::Info>(state.position_address);
         let pool = pool_v3::liquidity_pool(meta_a, meta_b, fee_tier_val);
 
+        let free_btc_before = state.free_btc;
+        let free_usdc_before = state.free_usdc;
+
         let (fee_a, fee_b) = pool_v3::claim_fees(&vault_signer, pos);
         state.free_btc = state.free_btc + fungible_asset::amount(&fee_a);
         state.free_usdc = state.free_usdc + fungible_asset::amount(&fee_b);
@@ -1186,6 +1232,20 @@ module yab::vault {
 
         let rewards = pool_v3::claim_rewards(&vault_signer, pos);
         process_reward_assets(rewards, pool, meta_a, meta_b, slip_bps, vault_addr, state);
+
+        let fee_bps = state.performance_fee_bps;
+        let treasury_addr = state.treasury;
+        take_harvest_protocol_cut(
+            &vault_signer,
+            vault_addr,
+            treasury_addr,
+            fee_bps,
+            meta_a,
+            meta_b,
+            free_btc_before,
+            free_usdc_before,
+            state,
+        );
 
         state.position_btc = 0;
         state.position_usdc = 0;
@@ -1271,7 +1331,8 @@ module yab::vault {
         let amount_a_desired = fungible_asset::amount(&fa_a_for_lp);
         let amount_b_desired = fungible_asset::amount(&fa_b_for_lp);
         let min_a = amount_a_desired * (10000 - slip_bps) / 10000;
-        let min_b = amount_b_desired * (10000 - slip_bps) / 10000;
+        // Same as `deposit_dual`: token-B minimum from slip often trips Hyperion `EAMOUNT_B_TOO_LESS` on CLMM rounding.
+        let min_b = 0u64;
         let deadline = timestamp::now_seconds() + DEADLINE_SECS;
 
         let (used_a, used_b, leftover_a, leftover_b) = router_v3::add_liquidity_by_contract(
@@ -1317,6 +1378,7 @@ module yab::vault {
         state.operator = new_operator;
     }
 
+    /// Sets bps taken from each token leg when operator harvests fees/rewards (`claim_rewards`, rebalance). Max 2000 (20%).
     public entry fun set_performance_fee(
         admin: &signer,
         vault_addr: address,
@@ -1432,5 +1494,36 @@ module yab::vault {
     #[test_only]
     public fun e2e_free_btc(vault_addr: address): u64 acquires VaultState {
         borrow_global<VaultState>(vault_addr).free_btc
+    }
+
+    #[test_only]
+    public fun e2e_free_usdc(vault_addr: address): u64 acquires VaultState {
+        borrow_global<VaultState>(vault_addr).free_usdc
+    }
+
+    #[test_only]
+    /// `free_*` in state and primary store already reflect post-claim balances; `free_*_before` are pre-claim snapshots.
+    public fun e2e_apply_harvest_cut_for_test(
+        vault_addr: address,
+        free_btc_before: u64,
+        free_usdc_before: u64,
+    ) acquires VaultState {
+        let state = borrow_global_mut<VaultState>(vault_addr);
+        let vault_signer = object::generate_signer_for_extending(&state.extend_ref);
+        let meta_a = object::address_to_object<Metadata>(state.token_a_metadata);
+        let meta_b = object::address_to_object<Metadata>(state.token_b_metadata);
+        let fee_bps = state.performance_fee_bps;
+        let treasury_addr = state.treasury;
+        take_harvest_protocol_cut(
+            &vault_signer,
+            vault_addr,
+            treasury_addr,
+            fee_bps,
+            meta_a,
+            meta_b,
+            free_btc_before,
+            free_usdc_before,
+            state,
+        );
     }
 }

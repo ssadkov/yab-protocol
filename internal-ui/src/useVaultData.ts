@@ -42,6 +42,7 @@ export type VaultSnapshot = {
   centerPrice: bigint;
   lastRecordedPrice: bigint;
   lastRebalanceTs: bigint;
+  /** Bps of each token leg sent to treasury on harvest (`claim_rewards` / rebalance fee claim); not charged on withdraw */
   performanceFeeBps: bigint;
 };
 

@@ -110,6 +110,7 @@ module yab::strategy {
     }
 
     /// Returns true when |current - center| / center >= trigger (BPS). If `center_price == 0`, returns true.
+    /// Uses u128 for the BPS ratio so `(diff * 10000)` cannot overflow u64 for extreme `center_price` values.
     public fun should_rebalance(
         current_price: u64,
         center_price: u64,
@@ -118,11 +119,11 @@ module yab::strategy {
         if (center_price == 0) {
             return true
         };
-        let deviation = if (current_price > center_price) {
-            (current_price - center_price) * 10000 / center_price
+        let deviation_bps = if (current_price > center_price) {
+            ((current_price - center_price) as u128) * 10000u128 / (center_price as u128)
         } else {
-            (center_price - current_price) * 10000 / center_price
+            ((center_price - current_price) as u128) * 10000u128 / (center_price as u128)
         };
-        deviation >= params.rebalance_trigger_bps
+        deviation_bps >= (params.rebalance_trigger_bps as u128)
     }
 }

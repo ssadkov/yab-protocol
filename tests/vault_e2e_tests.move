@@ -35,7 +35,7 @@ module yab::vault_e2e_tests {
         creator_b: &signer,
         admin: &signer,
         framework: &signer,
-    ): (address, address, MintRef) {
+    ): (address, address, MintRef, MintRef) {
         timestamp::set_time_has_started_for_testing(framework);
 
         let cref_a = object::create_named_object(creator_a, b"E2E_TOKEN_A");
@@ -61,6 +61,7 @@ module yab::vault_e2e_tests {
             utf8(b""),
             utf8(b""),
         );
+        let mint_b = fungible_asset::generate_mint_ref(&cref_b);
         let mb = object::address_from_constructor_ref(&cref_b);
 
         let _meta_a = object::address_to_object<Metadata>(ma);
@@ -70,7 +71,7 @@ module yab::vault_e2e_tests {
         let admin_addr = signer::address_of(admin);
         account::create_account_for_test(admin_addr);
         vault::initialize(admin, TREASURY_ADDR, OPERATOR_ADDR, ma, mb, 1);
-        (ma, mb, mint_a)
+        (ma, mb, mint_a, mint_b)
     }
 
     /// Mint token A into the vault primary store and mirror `VaultState.free_*` (for withdraw tests).
@@ -80,6 +81,20 @@ module yab::vault_e2e_tests {
         vault::e2e_set_free_reserves(vault_addr, free_btc, 0);
     }
 
+    fun fund_vault_free_ab(
+        vault_addr: address,
+        mint_a_ref: &MintRef,
+        mint_b_ref: &MintRef,
+        free_a: u64,
+        free_b: u64,
+    ) {
+        let fa_a = fungible_asset::mint(mint_a_ref, free_a);
+        primary_fungible_store::deposit(vault_addr, fa_a);
+        let fa_b = fungible_asset::mint(mint_b_ref, free_b);
+        primary_fungible_store::deposit(vault_addr, fa_b);
+        vault::e2e_set_free_reserves(vault_addr, free_a, free_b);
+    }
+
     #[test(creator_a = @0xCA01, creator_b = @0xCA02, admin = @0xAD01, framework = @0x1)]
     fun test_deposit_mints_correct_shares(
         creator_a: &signer,
@@ -87,7 +102,7 @@ module yab::vault_e2e_tests {
         admin: &signer,
         framework: &signer,
     ) {
-        let (_ma, _mb, mint_a) = setup_two_tokens_and_vault(creator_a, creator_b, admin, framework);
+        let (_ma, _mb, mint_a, _mint_b) = setup_two_tokens_and_vault(creator_a, creator_b, admin, framework);
         let admin_addr = signer::address_of(admin);
         let va = vault_object_address(admin_addr);
         let fa0 = fungible_asset::mint(&mint_a, SEED_A);
@@ -115,7 +130,7 @@ module yab::vault_e2e_tests {
         user: &signer,
         framework: &signer,
     ) {
-        let (ma, _mb, mint_a) = setup_two_tokens_and_vault(creator_a, creator_b, admin, framework);
+        let (ma, _mb, mint_a, _mint_b) = setup_two_tokens_and_vault(creator_a, creator_b, admin, framework);
         let admin_addr = signer::address_of(admin);
         let user_addr = signer::address_of(user);
         account::create_account_for_test(user_addr);
@@ -140,14 +155,14 @@ module yab::vault_e2e_tests {
     }
 
     #[test(creator_a = @0xCA31, creator_b = @0xCA32, admin = @0xAD31, user = @0xB531, framework = @0x1)]
-    fun test_performance_fee_on_profit_mints_to_treasury(
+    fun test_withdraw_does_not_mint_performance_to_treasury(
         creator_a: &signer,
         creator_b: &signer,
         admin: &signer,
         user: &signer,
         framework: &signer,
     ) {
-        let (_ma, _mb, mint_a) = setup_two_tokens_and_vault(creator_a, creator_b, admin, framework);
+        let (_ma, _mb, mint_a, _mint_b) = setup_two_tokens_and_vault(creator_a, creator_b, admin, framework);
         let admin_addr = signer::address_of(admin);
         let user_addr = signer::address_of(user);
         account::create_account_for_test(user_addr);
@@ -165,7 +180,7 @@ module yab::vault_e2e_tests {
         let treas_before = primary_fungible_store::balance(TREASURY_ADDR, yab_meta);
         vault::withdraw_with_fixed_oracle(user, va, shares, ORACLE_PX);
         let treas_after = primary_fungible_store::balance(TREASURY_ADDR, yab_meta);
-        assert!(treas_after > treas_before, 1);
+        assert!(treas_after == treas_before, 1);
     }
 
     #[test(creator_a = @0xCA41, creator_b = @0xCA42, admin = @0xAD41, user = @0xB541, framework = @0x1)]
@@ -176,7 +191,7 @@ module yab::vault_e2e_tests {
         user: &signer,
         framework: &signer,
     ) {
-        let (_ma, _mb, mint_a) = setup_two_tokens_and_vault(creator_a, creator_b, admin, framework);
+        let (_ma, _mb, mint_a, _mint_b) = setup_two_tokens_and_vault(creator_a, creator_b, admin, framework);
         let admin_addr = signer::address_of(admin);
         let user_addr = signer::address_of(user);
         account::create_account_for_test(user_addr);
@@ -205,7 +220,7 @@ module yab::vault_e2e_tests {
         user: &signer,
         framework: &signer,
     ) {
-        let (_ma, _mb, mint_a) = setup_two_tokens_and_vault(creator_a, creator_b, admin, framework);
+        let (_ma, _mb, mint_a, _mint_b) = setup_two_tokens_and_vault(creator_a, creator_b, admin, framework);
         let admin_addr = signer::address_of(admin);
         let user_addr = signer::address_of(user);
         account::create_account_for_test(user_addr);
@@ -230,7 +245,7 @@ module yab::vault_e2e_tests {
         user: &signer,
         framework: &signer,
     ) {
-        let (ma, _mb, mint_a) = setup_two_tokens_and_vault(creator_a, creator_b, admin, framework);
+        let (ma, _mb, mint_a, _mint_b) = setup_two_tokens_and_vault(creator_a, creator_b, admin, framework);
         let admin_addr = signer::address_of(admin);
         let user_addr = signer::address_of(user);
         account::create_account_for_test(user_addr);
@@ -254,5 +269,29 @@ module yab::vault_e2e_tests {
         let bal_after = primary_fungible_store::balance(user_addr, meta_a);
         assert!(bal_after - bal_before == owed, 2);
         assert!(vault::e2e_free_btc(va) == free_before - owed, 3);
+    }
+
+    #[test(creator_a = @0xCA71, creator_b = @0xCA72, admin = @0xAD71, framework = @0x1)]
+    fun test_harvest_fee_transfers_to_treasury(
+        creator_a: &signer,
+        creator_b: &signer,
+        admin: &signer,
+        framework: &signer,
+    ) {
+        let (ma, mb, mint_a, mint_b) = setup_two_tokens_and_vault(creator_a, creator_b, admin, framework);
+        account::create_account_for_test(TREASURY_ADDR);
+        let admin_addr = signer::address_of(admin);
+        let va = vault_object_address(admin_addr);
+        vault::set_performance_fee(admin, va, 1000);
+        fund_vault_free_ab(va, &mint_a, &mint_b, 1000, 500);
+        let meta_a = object::address_to_object<Metadata>(ma);
+        let meta_b = object::address_to_object<Metadata>(mb);
+        let treas_a_before = primary_fungible_store::balance(TREASURY_ADDR, meta_a);
+        let treas_b_before = primary_fungible_store::balance(TREASURY_ADDR, meta_b);
+        vault::e2e_apply_harvest_cut_for_test(va, 0, 0);
+        assert!(primary_fungible_store::balance(TREASURY_ADDR, meta_a) - treas_a_before == 100, 1);
+        assert!(primary_fungible_store::balance(TREASURY_ADDR, meta_b) - treas_b_before == 50, 2);
+        assert!(vault::e2e_free_btc(va) == 900, 3);
+        assert!(vault::e2e_free_usdc(va) == 450, 4);
     }
 }

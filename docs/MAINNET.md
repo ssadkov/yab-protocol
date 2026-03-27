@@ -42,6 +42,20 @@
 
 ---
 
+## Successful package upgrade (compatible publish)
+
+| Field | Value |
+|--------|--------|
+| Hash | `0xb9cd87349b8388e3d14f948473809a4f9c54e2564507eb9bd3bc6232ce76c30d` |
+| Network | Mainnet |
+| VM status | `Executed successfully` |
+
+**Explorer:** [transaction on Aptos Explorer](https://explorer.aptoslabs.com/txn/0xb9cd87349b8388e3d14f948473809a4f9c54e2564507eb9bd3bc6232ce76c30d?network=mainnet)
+
+**Publish command:** see [`README.md`](../README.md) (Publishing / package upgrade). Harvest semantics: [`WITHDRAW_AND_CLAIM.md`](./WITHDRAW_AND_CLAIM.md).
+
+---
+
 ## Action plan (next steps)
 
 1. **USDC deposit path** — implement and/or validate user flow for depositing **USDC** (token B) into the vault, not only WBTC (token A). Includes UI/SDK and on-chain `deposit_dual` or equivalent if that is the intended entrypoint.
