@@ -4,6 +4,8 @@ type HeroStatsProps = {
   totalAssetsUsd: string | null;
   yabPriceUsd: string | null;
   btcUsdLabel: string | null;
+  /** Source line: Pyth safe view vs fallback, optional cache age */
+  btcUsdFooter: string | null;
   onRefresh: () => void;
 };
 
@@ -13,6 +15,7 @@ export function HeroStats({
   totalAssetsUsd,
   yabPriceUsd,
   btcUsdLabel,
+  btcUsdFooter,
   onRefresh,
 }: HeroStatsProps) {
   const show = (v: string | null) =>
@@ -60,14 +63,19 @@ export function HeroStats({
       <div className="relative overflow-hidden bg-surface-container-low p-6 md:p-8">
         <div className="relative z-10">
           <p className="mb-2 text-xs font-medium uppercase tracking-[0.15em] text-on-surface-variant">
-            BTC/USD (vault cache)
+            BTC/USD (Pyth on-chain)
           </p>
           <div className="flex items-baseline gap-2">
             <span className="font-headline text-3xl font-extrabold tracking-tighter text-secondary md:text-4xl">
               {show(btcUsdLabel)}
             </span>
           </div>
-          <p className="mt-1 font-mono text-[10px] text-secondary/60">ORACLE SNAPSHOT</p>
+          <p
+            className="mt-1 font-mono text-[10px] leading-snug text-secondary/70"
+            title={btcUsdFooter ?? undefined}
+          >
+            {btcUsdFooter ?? "—"}
+          </p>
         </div>
       </div>
     </div>

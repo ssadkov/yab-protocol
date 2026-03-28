@@ -44,6 +44,10 @@ export type VaultSnapshot = {
   lastRebalanceTs: bigint;
   /** Bps of each token leg sent to treasury on harvest (`claim_rewards` / rebalance fee claim); not charged on withdraw */
   performanceFeeBps: bigint;
+  /** True when `btc_usd_price_safe` returned (Pyth + vault guards); false when falling back to `last_recorded_price`. */
+  btcUsdFromSafeOracleView: boolean;
+  /** `age` field from `btc_usd_snapshot_unsafe` (seconds since Pyth publish); null if view fails. */
+  pythPublishAgeSecs: bigint | null;
 };
 
 function toBig(v: unknown): bigint {
@@ -87,6 +91,7 @@ export function useVaultData(pollMs = 15_000) {
       const lastRec = toBig(d.last_recorded_price);
 
       let btcUsd = lastRec;
+      let btcUsdFromSafeOracleView = false;
       try {
         const safe = await aptos.view({
           payload: {
@@ -95,10 +100,24 @@ export function useVaultData(pollMs = 15_000) {
           },
         });
         btcUsd = toBig(safe[0]);
+        btcUsdFromSafeOracleView = true;
       } catch {
         if (lastRec > 0n) {
           btcUsd = lastRec;
         }
+      }
+
+      let pythPublishAgeSecs: bigint | null = null;
+      try {
+        const snap = await aptos.view({
+          payload: {
+            function: `${MODULE_ADDRESS}::oracle::btc_usd_snapshot_unsafe`,
+            functionArguments: [],
+          },
+        });
+        pythPublishAgeSecs = toBig(snap[3]);
+      } catch {
+        pythPublishAgeSecs = null;
       }
 
       const supplyView = await aptos.view({
@@ -134,6 +153,8 @@ export function useVaultData(pollMs = 15_000) {
         lastRecordedPrice: lastRec,
         lastRebalanceTs: toBig(d.last_rebalance_ts),
         performanceFeeBps: toBig(d.performance_fee_bps),
+        btcUsdFromSafeOracleView,
+        pythPublishAgeSecs,
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

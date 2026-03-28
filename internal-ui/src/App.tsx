@@ -146,7 +146,8 @@ export default function App() {
 
   const exchangeRateHint = useMemo(() => {
     if (!data || !navUsd) return null;
-    const usdPerBtc = Number(data.lastRecordedPrice) / 10 ** BTC_USD_ORACLE_DECIMALS;
+    const usdPerBtc =
+      Number(data.btcUsdPriceRaw) / 10 ** BTC_USD_ORACLE_DECIMALS;
     if (!Number.isFinite(usdPerBtc) || usdPerBtc <= 0) return null;
     const wbtcPerYab = navUsd.yabUsdPerFull / usdPerBtc;
     return `1 ${YAB_SYMBOL} ≈ ${wbtcPerYab.toLocaleString("en-US", {
@@ -399,8 +400,22 @@ export default function App() {
     navUsd != null ? formatUsd(navUsd.yabUsdPerFull) : null;
   const btcUsdStr =
     data != null
-      ? formatRaw(data.lastRecordedPrice, BTC_USD_ORACLE_DECIMALS, 8)
+      ? formatRaw(data.btcUsdPriceRaw, BTC_USD_ORACLE_DECIMALS, 8)
       : null;
+
+  const btcUsdFooter = useMemo(() => {
+    if (!data) return null;
+    const bits: string[] = [];
+    if (data.btcUsdFromSafeOracleView) {
+      bits.push("Pyth via btc_usd_price_safe");
+    } else {
+      bits.push("Safe view failed — showing last_recorded_price");
+    }
+    if (data.pythPublishAgeSecs != null) {
+      bits.push(`cache age ${data.pythPublishAgeSecs.toString()}s`);
+    }
+    return bits.join(" · ");
+  }, [data]);
 
   const perfBpsStr = data ? `${data.performanceFeeBps.toString()} bps` : null;
   const perfPctStr = data
@@ -485,6 +500,7 @@ export default function App() {
             totalAssetsUsd={totalAssetsStr}
             yabPriceUsd={yabPriceStr}
             btcUsdLabel={btcUsdStr}
+            btcUsdFooter={btcUsdFooter}
             onRefresh={() => void refresh()}
           />
 
