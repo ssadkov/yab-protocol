@@ -1,0 +1,9 @@
+{
+  "name": "yab-protocol",
+  "private": true,
+  "scripts": {
+    "dev": "npm run dev --prefix internal-ui",
+    "build": "npm run build --prefix internal-ui",
+    "preview": "npm run preview --prefix internal-ui"
+  }
+}

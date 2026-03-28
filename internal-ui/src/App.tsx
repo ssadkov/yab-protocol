@@ -70,8 +70,23 @@ export default function App() {
   const [depositDualA, setDepositDualA] = useState("");
   const [depositDualB, setDepositDualB] = useState("");
   const [depositDualEdited, setDepositDualEdited] = useState(false);
+  const [withdrawYab, setWithdrawYab] = useState("");
   const [busy, setBusy] = useState(false);
   const [txMsg, setTxMsg] = useState<string | null>(null);
+
+  const U64_MAX = 18446744073709551615n;
+
+  /** Mirrors vault.move `btc_owed = shares_in * yab_price / 100_000_000` (estimate at current NAV). */
+  const withdrawEstimateBtcRaw = useMemo(() => {
+    if (!data) return null;
+    try {
+      const shares = parseToRaw(withdrawYab, YAB_DECIMALS);
+      if (shares <= 0n) return null;
+      return (shares * data.yabPriceRaw) / 100_000_000n;
+    } catch {
+      return null;
+    }
+  }, [data, withdrawYab]);
 
   const navUsd = useMemo(() => {
     if (!data) return null;
@@ -108,6 +123,7 @@ export default function App() {
       setDepositA("");
       setDepositDualA("");
       setDepositDualB("");
+      setWithdrawYab("");
     }
   }, [connected]);
 
@@ -121,6 +137,58 @@ export default function App() {
     setDepositDualA(formatRaw(balanceA, tokenADecimals));
     setDepositDualB(formatRaw(balanceB, tokenBDecimals));
   }, [balanceA, balanceB, tokenADecimals, tokenBDecimals, depositDualEdited]);
+
+  async function submitWithdraw() {
+    if (!connected || !account) {
+      setTxMsg("Connect wallet first");
+      return;
+    }
+    if (balanceYab == null) {
+      setTxMsg("YAB balance not loaded");
+      return;
+    }
+    setBusy(true);
+    setTxMsg(null);
+    try {
+      const aptos = getAptos();
+      let raw: bigint;
+      try {
+        raw = parseToRaw(withdrawYab, YAB_DECIMALS);
+      } catch (e) {
+        setTxMsg(e instanceof Error ? e.message : String(e));
+        return;
+      }
+      if (raw <= 0n) {
+        setTxMsg("Amount must be > 0");
+        return;
+      }
+      if (raw > balanceYab) {
+        setTxMsg("Amount exceeds YAB balance");
+        return;
+      }
+      if (raw > U64_MAX) {
+        setTxMsg("Amount too large for chain (u64)");
+        return;
+      }
+      const pending = await signAndSubmitTransaction({
+        data: {
+          function: `${MODULE_ADDRESS}::vault::withdraw`,
+          functionArguments: [VAULT_ADDRESS_NORMALIZED, toEntryU64(raw)],
+        },
+      });
+      const txHash = transactionHashFromSubmit(pending);
+      await aptos.waitForTransaction({ transactionHash: txHash });
+      setTxMsg(`withdraw ok: ${txHash}`);
+      setWithdrawYab("");
+      await refresh();
+      await refreshBalances();
+      await refreshHyperion();
+    } catch (e) {
+      setTxMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submitDeposit(singleA: boolean) {
     if (!connected || !account) {
@@ -561,6 +629,59 @@ export default function App() {
           onClick={() => void submitDeposit(false)}
         >
           {busy ? "…" : "deposit_dual"}
+        </button>
+      </section>
+
+      <section className="card">
+        <h2>Withdraw ({YAB_SYMBOL} → {TOKEN_A_SYMBOL})</h2>
+        <p className="hint">
+          Burns YAB from your primary FA store and sends{" "}
+          <strong>{TOKEN_A_SYMBOL}</strong> (wrapped BTC on Aptos) to your wallet per
+          on-chain NAV — same asset the vault uses for the BTC leg. There is no USDC
+          payout on <code className="mono">withdraw</code>; estimate below uses current{" "}
+          <code className="mono">yab_price</code> (actual output follows the tx-time
+          oracle).
+        </p>
+        <label className="field">
+          {YAB_SYMBOL} to burn
+          <div className="row-input">
+            <input
+              value={withdrawYab}
+              onChange={(e) => setWithdrawYab(e.target.value)}
+              className="input"
+              disabled={busy}
+            />
+            <button
+              type="button"
+              className="btn secondary"
+              disabled={busy || balanceYab == null || balanceYab === 0n}
+              onClick={() => {
+                if (balanceYab == null) return;
+                setWithdrawYab(formatRaw(balanceYab, YAB_DECIMALS));
+              }}
+            >
+              Max
+            </button>
+          </div>
+        </label>
+        {withdrawEstimateBtcRaw != null && (
+          <p className="hint">
+            ≈ <strong>{formatRaw(withdrawEstimateBtcRaw, tokenADecimals)}</strong>{" "}
+            {TOKEN_A_SYMBOL} expected (NAV estimate)
+          </p>
+        )}
+        <button
+          type="button"
+          className="btn"
+          disabled={
+            busy ||
+            !connected ||
+            balanceYab == null ||
+            balanceYab === 0n
+          }
+          onClick={() => void submitWithdraw()}
+        >
+          {busy ? "…" : "Withdraw"}
         </button>
       </section>
 

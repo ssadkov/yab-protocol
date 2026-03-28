@@ -22,9 +22,11 @@ Aptos Move vault around a Hyperion v3 CLMM position, YAB fungible shares, and a 
 | `rebalance_too_early` | Wall-clock interval &lt; **`min_rebalance_interval_secs`**. |
 | Hyperion `router_v3` liquidity errors (`EAMOUNT_*_TOO_LESS`) | CLMM `add_liquidity` often uses less of a leg than slip-derived floors expect. **`rebalance`** sets **`min_b = 0`** and keeps **`min_a`** from **`max_swap_slippage_bps`**. If **`EAMOUNT_A_TOO_LESS`** appears, raise **`max_swap_slippage_bps`** via **`set_strategy_params`** or align with a package that sets **`min_a = 0`** on rebalance too. |
 
-### Deposit (`vault::deposit` / `vault::deposit_dual`)
+### Deposit (`vault::deposit` / `vault::deposit_dual` / `vault::deposit_usdc`)
 
 Single-asset **`deposit`** swaps part of WBTC per **`range_half_width_bps`**, then calls **`add_liquidity_by_contract`** with **`min_a = 0`** and **`min_b = 0`** so Hyperion does not revert on small deposits (**`EAMOUNT_A_TOO_LESS`** / **`EAMOUNT_B_TOO_LESS`**). **`deposit_dual`** uses the same zero mins (no in-contract swap).
+
+**`deposit_usdc`** is the symmetric path for **token B only** (e.g. USDC): it swaps **`swap_amount_b = total_b * btc_ratio / 10000`** **B→A**, then **`add_liquidity`** with **`min_a = min_b = 0`**, and mints shares from the B-leg BTC-equivalent notional (same idea as the B side in **`deposit_dual`**). Full rationale for slip floors and the WBTC deposit fix is in **[`docs/DEPOSITS_AND_CLMM_MINS.md`](docs/DEPOSITS_AND_CLMM_MINS.md)**.
 
 ### Strategy parameters (`VaultStrategy.params`)
 
@@ -66,8 +68,19 @@ aptos move run \
   --assume-yes
 ```
 
+**Deposit USDC only** (`vault::deposit_usdc`) — amount is raw **token B** units (USDC **6** decimals on mainnet). Use the **depositor’s** Aptos CLI profile (not necessarily admin):
+
+```bash
+aptos move run \
+  --profile YOUR_PROFILE \
+  --function-id 0xd42e699a4b22880d77da7dd02bb2fa768ecaa8cb1c4aa1423f968f480c97a60b::vault::deposit_usdc \
+  --args address:0x599b04f9fc1c3702da76430d96a7962adbafd76941fe980d12e0bc0033f1379c u64:AMOUNT_RAW \
+  --assume-yes
+```
+
 ## Further docs
 
+- [`docs/DEPOSITS_AND_CLMM_MINS.md`](docs/DEPOSITS_AND_CLMM_MINS.md) — why **`EAMOUNT_*_TOO_LESS`** happened, vault changes (zero **`min_a`/`min_b`** on deposits, rebalance **`min_b`**, rewards/treasury, **`should_rebalance`** u128), and **`deposit_usdc`** (USDC-only / token B).
 - [`docs/PYTH_ORACLE.md`](docs/PYTH_ORACLE.md) — Hermes / Pyth, views, and safety params.
 - [`docs/MAINNET.md`](docs/MAINNET.md) — mainnet smoke-test log.
 - [`docs/WITHDRAW_AND_CLAIM.md`](docs/WITHDRAW_AND_CLAIM.md) — user `withdraw` and operator `claim_rewards`.

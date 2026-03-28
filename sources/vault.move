@@ -116,6 +116,8 @@ module yab::vault {
     const MIN_DEPOSIT_TOKEN_A: u64 = 20_000; // 0.0002 WBTC minimum
     /// Minimum token-B amount (post-swap) before `add_liquidity_by_contract` when a swap was performed.
     const MIN_POST_SWAP_TOKEN_B: u64 = 100;
+    /// Minimum token-A amount (post B→A swap) before `add_liquidity` in `deposit_usdc` when a swap was performed.
+    const MIN_POST_SWAP_TOKEN_A: u64 = 1_000;
     /// `deposit_dual`: minimum token B pulled from user (USDC raw units; avoids dust-only B leg).
     const MIN_DEPOSIT_TOKEN_B_DUAL: u64 = 100;
 
@@ -919,6 +921,178 @@ module yab::vault {
         };
 
         event::emit(Deposited { user: user_addr, btc_in: token_a_in, shares_minted: shares });
+    }
+
+    /// User adds token B (e.g. USDC) only; swaps part to token A per `range_half_width_bps`, then adds to the CLMM position.
+    /// Share mint uses the same BTC-equivalent logic as `deposit_dual` for the B leg (`token_b_in * 1e8 / btc_price`).
+    public entry fun deposit_usdc(
+        user: &signer,
+        vault_addr: address,
+        token_b_in: u64,
+    ) acquires VaultState, YabRefs, VaultStrategy, UserCheckpoint {
+        deposit_b_impl(user, vault_addr, token_b_in, option::none(), true);
+    }
+
+    #[test_only]
+    public fun deposit_usdc_with_fixed_oracle(
+        user: &signer,
+        vault_addr: address,
+        token_b_in: u64,
+        btc_usd_price: u64,
+    ) acquires VaultState, YabRefs, VaultStrategy, UserCheckpoint {
+        deposit_b_impl(user, vault_addr, token_b_in, option::some(btc_usd_price), false);
+    }
+
+    fun deposit_b_impl(
+        user: &signer,
+        vault_addr: address,
+        token_b_in: u64,
+        price_override: option::Option<u64>,
+        enforce_min_deposit: bool,
+    ) acquires VaultState, YabRefs, VaultStrategy, UserCheckpoint {
+        assert!(token_b_in > 0, errors::zero_amount());
+        if (enforce_min_deposit) {
+            assert!(token_b_in >= MIN_DEPOSIT_TOKEN_B_DUAL, errors::deposit_too_small());
+        };
+        let user_addr = signer::address_of(user);
+
+        let btc_price = {
+            let s = borrow_global<VaultState>(vault_addr);
+            assert!(s.position_address != @0x0, errors::not_bootstrapped());
+            resolve_oracle_price(s.last_recorded_price, price_override)
+        };
+
+        let yab_price = {
+            let s = borrow_global<VaultState>(vault_addr);
+            get_yab_price(s, vault_addr, btc_price)
+        };
+
+        let half_bps = {
+            let st = borrow_global<VaultStrategy>(vault_addr);
+            strat::range_half_width_bps(&st.params)
+        };
+
+        let (meta_a, meta_b, fee_tier_val, pos_addr) = {
+            let s = borrow_global<VaultState>(vault_addr);
+            (
+                object::address_to_object<Metadata>(s.token_a_metadata),
+                object::address_to_object<Metadata>(s.token_b_metadata),
+                s.fee_tier,
+                s.position_address,
+            )
+        };
+
+        let pool = pool_v3::liquidity_pool(meta_a, meta_b, fee_tier_val);
+        let pool_obj_addr = object::object_address(&pool);
+        let (_, sqrt_from_pool) = pool_v3::current_tick_and_price(pool_obj_addr);
+        let sqrt_current = if (sqrt_from_pool > 0) {
+            sqrt_from_pool
+        } else {
+            math::price_to_sqrt_q64(btc_price)
+        };
+        let (sqrt_price_low, sqrt_price_high) = math::sqrt_bps_band_around_current(sqrt_current, half_bps);
+        let btc_ratio = math::btc_ratio_bps(sqrt_current, sqrt_price_low, sqrt_price_high);
+
+        let state = borrow_global_mut<VaultState>(vault_addr);
+        state.last_recorded_price = btc_price;
+
+        let vault_signer = object::generate_signer_for_extending(&state.extend_ref);
+
+        let fa_a_total = if (state.free_btc > 0) {
+            let fa = primary_fungible_store::withdraw(&vault_signer, meta_a, state.free_btc);
+            state.free_btc = 0;
+            fa
+        } else {
+            fungible_asset::zero(meta_a)
+        };
+
+        let fa_b_total = primary_fungible_store::withdraw(user, meta_b, token_b_in);
+        if (state.free_usdc > 0) {
+            let fa_free_b = primary_fungible_store::withdraw(&vault_signer, meta_b, state.free_usdc);
+            fungible_asset::merge(&mut fa_b_total, fa_free_b);
+            state.free_usdc = 0;
+        };
+
+        let total_b = fungible_asset::amount(&fa_b_total);
+        let swap_amount_b = total_b * (btc_ratio as u64) / 10000;
+
+        let fa_a_for_lp = if (swap_amount_b > 0) {
+            let fa_swap = fungible_asset::extract(&mut fa_b_total, swap_amount_b);
+            let limit = swap_sqrt_price_limit(pool, false);
+            let (_amt_out, fa_in_remain, fa_a_from_swap) = pool_v3::swap(
+                pool,
+                false,
+                true,
+                swap_amount_b,
+                fa_swap,
+                limit,
+            );
+            fungible_asset::merge(&mut fa_b_total, fa_in_remain);
+            if (fungible_asset::amount(&fa_a_total) > 0) {
+                fungible_asset::merge(&mut fa_a_from_swap, fa_a_total);
+                fa_a_from_swap
+            } else {
+                fungible_asset::destroy_zero(fa_a_total);
+                fa_a_from_swap
+            }
+        } else {
+            fa_a_total
+        };
+
+        if (swap_amount_b > 0 && enforce_min_deposit) {
+            assert!(
+                fungible_asset::amount(&fa_a_for_lp) >= MIN_POST_SWAP_TOKEN_A,
+                errors::deposit_too_small(),
+            );
+        };
+
+        let position = object::address_to_object<position_v3::Info>(pos_addr);
+        let amount_a_desired = fungible_asset::amount(&fa_a_for_lp);
+        let amount_b_desired = fungible_asset::amount(&fa_b_total);
+        let min_a = 0u64;
+        let min_b = 0u64;
+        let deadline = timestamp::now_seconds() + DEADLINE_SECS;
+
+        let (used_a, used_b, leftover_a, leftover_b) = router_v3::add_liquidity_by_contract(
+            &vault_signer,
+            position,
+            amount_a_desired,
+            amount_b_desired,
+            min_a,
+            min_b,
+            fa_a_for_lp,
+            fa_b_total,
+            deadline,
+        );
+
+        state.position_btc = state.position_btc + used_a;
+        state.position_usdc = state.position_usdc + used_b;
+        state.free_btc = fungible_asset::amount(&leftover_a);
+        state.free_usdc = fungible_asset::amount(&leftover_b);
+
+        primary_fungible_store::deposit(vault_addr, leftover_a);
+        primary_fungible_store::deposit(vault_addr, leftover_b);
+
+        let btc_in_equiv = (token_b_in as u128) * 100_000_000 / (btc_price as u128);
+        let shares = ((btc_in_equiv * 100_000_000) / (yab_price as u128)) as u64;
+        assert!(shares > 0, errors::zero_amount());
+
+        let refs = borrow_global<YabRefs>(vault_addr);
+        let yab_fa = fungible_asset::mint(&refs.mint_ref, shares);
+        primary_fungible_store::deposit(user_addr, yab_fa);
+
+        if (!exists<UserCheckpoint>(user_addr)) {
+            move_to(user, UserCheckpoint { entry_price: yab_price });
+        } else {
+            let chk = borrow_global_mut<UserCheckpoint>(user_addr);
+            chk.entry_price = yab_price;
+        };
+
+        event::emit(Deposited {
+            user: user_addr,
+            btc_in: (btc_in_equiv as u64),
+            shares_minted: shares,
+        });
     }
 
     /// Burn YAB and receive token A (no withdraw performance fee; see `performance_fee_bps` on harvest only).
