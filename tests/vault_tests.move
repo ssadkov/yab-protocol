@@ -77,4 +77,13 @@ module yab::vault_tests {
         let va = vault_object_address(signer::address_of(admin));
         vault::set_strategy_params(admin, va, 99, 400, 30);
     }
+
+    // 6-dec USDC raw * 10^10 / btc_price (spot check, mainnet oracle scale).
+    #[test]
+    fun test_usdc_raw_to_btc_raw_equiv_scale() {
+        let btc_px: u64 = 6686227436716;
+        let one_usdc: u64 = 1_000_000;
+        let out = vault::e2e_usdc_raw_to_btc_raw_equiv(one_usdc, btc_px);
+        assert!(out == 1495, 1);
+    }
 }

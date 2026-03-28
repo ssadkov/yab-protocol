@@ -52,6 +52,7 @@ module yab::vault_e2e_tests {
         let ma = object::address_from_constructor_ref(&cref_a);
 
         let cref_b = object::create_named_object(creator_b, b"E2E_TOKEN_B");
+        // 8 decimals: matches Hyperion test pool stub pairing; mainnet USDC is 6-dec (see `vault::USDC_TO_BTC_RAW_MULT`).
         primary_fungible_store::create_primary_store_enabled_fungible_asset(
             &cref_b,
             option::some(1_000_000u128),

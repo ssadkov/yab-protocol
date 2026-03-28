@@ -107,6 +107,9 @@ module yab::vault {
     }
 
     const INITIAL_YAB_PRICE: u64 = 100_000_000; // 1.0 with 8 decimals
+    /// Token-B (USDC) uses **6** decimals. `btc_price` is USD per 1 BTC with 8 fractional digits (`oracle` scale).
+    /// Converts USDC raw → same units as token-A (WBTC) 8-dec raw: `usdc_raw * USDC_TO_BTC_RAW_MULT / btc_price`.
+    const USDC_TO_BTC_RAW_MULT: u128 = 10_000_000_000; // 10^10
     const DEADLINE_SECS: u64 = 1800;
     /// Sqrt price limits for `pool_v3::swap` (Q64.64 / Hyperion). `MIN` matches Uniswap v3 min tick ratio (fits u128).
     /// Uniswap’s uint160 `MAX_SQRT_RATIO` does **not** fit `u128`; use Hyperion `tick_math::MAX_SQRT_PRICE_X64` for the upper bound.
@@ -122,6 +125,11 @@ module yab::vault {
     const MIN_DEPOSIT_TOKEN_B_DUAL: u64 = 100;
 
     /// Pyth on-chain read, or a fixed price for `aptos move test` E2E paths only (`#[test_only]` callers pass `some(price)`).
+    /// USDC (6-dec raw) → WBTC-style 8-dec raw at vault oracle `btc_price` scale.
+    fun usdc_raw_to_btc_raw_equiv(usdc_raw: u64, btc_price: u64): u64 {
+        (((usdc_raw as u128) * USDC_TO_BTC_RAW_MULT) / (btc_price as u128)) as u64
+    }
+
     fun resolve_oracle_price(last_recorded: u64, price_override: option::Option<u64>): u64 {
         if (option::is_some(&price_override)) {
             let p = option::destroy_some(price_override);
@@ -136,9 +144,9 @@ module yab::vault {
     /// Total vault assets in token-A (BTC) equivalent (8 decimals). Oracle `btc_price` is BTC/USD (8 decimals).
     fun get_total_assets(state: &VaultState, btc_price: u64): u64 {
         let pos_btc_equiv = (state.position_btc as u128)
-            + (state.position_usdc as u128) * 100_000_000 / (btc_price as u128);
+            + (usdc_raw_to_btc_raw_equiv(state.position_usdc, btc_price) as u128);
         let free_btc_equiv = (state.free_btc as u128)
-            + (state.free_usdc as u128) * 100_000_000 / (btc_price as u128);
+            + (usdc_raw_to_btc_raw_equiv(state.free_usdc, btc_price) as u128);
         ((pos_btc_equiv + free_btc_equiv) as u64)
     }
 
@@ -155,7 +163,7 @@ module yab::vault {
     }
 
     fun position_btc_equiv(state: &VaultState, btc_price: u64): u64 {
-        state.position_btc + state.position_usdc * 100_000_000 / btc_price
+        state.position_btc + usdc_raw_to_btc_raw_equiv(state.position_usdc, btc_price)
     }
 
     fun merge_option_fa_into(acc: &mut FungibleAsset, opt: option::Option<FungibleAsset>) {
@@ -612,7 +620,8 @@ module yab::vault {
         primary_fungible_store::deposit(vault_addr, leftover_a);
         primary_fungible_store::deposit(vault_addr, leftover_b);
 
-        let mint_equiv = (used_a as u128) + (used_b as u128) * 100_000_000 / (oracle_price as u128);
+        let mint_equiv = (used_a as u128)
+            + (usdc_raw_to_btc_raw_equiv(used_b, oracle_price) as u128);
         let shares = mint_equiv as u64;
         assert!(shares > 0, errors::zero_amount());
 
@@ -756,7 +765,7 @@ module yab::vault {
         primary_fungible_store::deposit(vault_addr, leftover_b);
 
         let btc_in_equiv = (token_a_in as u128)
-            + (token_b_in as u128) * 100_000_000 / (btc_price as u128);
+            + (usdc_raw_to_btc_raw_equiv(token_b_in, btc_price) as u128);
         let shares = ((btc_in_equiv * 100_000_000) / (yab_price as u128)) as u64;
         assert!(shares > 0, errors::zero_amount());
 
@@ -924,7 +933,7 @@ module yab::vault {
     }
 
     /// User adds token B (e.g. USDC) only; swaps part to token A per `range_half_width_bps`, then adds to the CLMM position.
-    /// Share mint uses the same BTC-equivalent logic as `deposit_dual` for the B leg (`token_b_in * 1e8 / btc_price`).
+    /// Share mint uses the same BTC-equivalent logic as `deposit_dual` for the B leg (`usdc_raw_to_btc_raw_equiv`).
     public entry fun deposit_usdc(
         user: &signer,
         vault_addr: address,
@@ -1073,7 +1082,7 @@ module yab::vault {
         primary_fungible_store::deposit(vault_addr, leftover_a);
         primary_fungible_store::deposit(vault_addr, leftover_b);
 
-        let btc_in_equiv = (token_b_in as u128) * 100_000_000 / (btc_price as u128);
+        let btc_in_equiv = (usdc_raw_to_btc_raw_equiv(token_b_in, btc_price) as u128);
         let shares = ((btc_in_equiv * 100_000_000) / (yab_price as u128)) as u64;
         assert!(shares > 0, errors::zero_amount());
 
@@ -1630,6 +1639,12 @@ module yab::vault {
     public fun e2e_yab_price(vault_addr: address, btc_usd_price: u64): u64 acquires VaultState {
         let s = borrow_global<VaultState>(vault_addr);
         get_yab_price(s, vault_addr, btc_usd_price)
+    }
+
+    #[test_only]
+    /// Exposes USDC (6-dec) raw → 8-dec BTC raw; for `aptos move test` only.
+    public fun e2e_usdc_raw_to_btc_raw_equiv(usdc_raw: u64, btc_price: u64): u64 {
+        usdc_raw_to_btc_raw_equiv(usdc_raw, btc_price)
     }
 
     #[test_only]

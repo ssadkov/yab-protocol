@@ -67,6 +67,8 @@ export default function App() {
 
   const [depositA, setDepositA] = useState("");
   const [depositAEdited, setDepositAEdited] = useState(false);
+  const [depositB, setDepositB] = useState("");
+  const [depositBEdited, setDepositBEdited] = useState(false);
   const [depositDualA, setDepositDualA] = useState("");
   const [depositDualB, setDepositDualB] = useState("");
   const [depositDualEdited, setDepositDualEdited] = useState(false);
@@ -116,11 +118,21 @@ export default function App() {
     return (Number(balanceYab) / Number(supply)) * navUsd.totalSpotUsd;
   }, [data, balanceYab, navUsd]);
 
+  /** Fraction of total YAB supply (raw / raw), for display — not dollar “cost basis”. */
+  const walletYabSharePct = useMemo(() => {
+    if (!data || balanceYab == null || balanceYab === 0n) return null;
+    const supply = data.yabSupplyRaw;
+    if (supply === 0n) return null;
+    return (Number(balanceYab) / Number(supply)) * 100;
+  }, [data, balanceYab]);
+
   useEffect(() => {
     if (!connected) {
       setDepositAEdited(false);
+      setDepositBEdited(false);
       setDepositDualEdited(false);
       setDepositA("");
+      setDepositB("");
       setDepositDualA("");
       setDepositDualB("");
       setWithdrawYab("");
@@ -131,6 +143,11 @@ export default function App() {
     if (depositAEdited || balanceA == null) return;
     setDepositA(formatRaw(balanceA, tokenADecimals));
   }, [balanceA, tokenADecimals, depositAEdited]);
+
+  useEffect(() => {
+    if (depositBEdited || balanceB == null) return;
+    setDepositB(formatRaw(balanceB, tokenBDecimals));
+  }, [balanceB, tokenBDecimals, depositBEdited]);
 
   useEffect(() => {
     if (depositDualEdited || balanceA == null || balanceB == null) return;
@@ -180,6 +197,45 @@ export default function App() {
       await aptos.waitForTransaction({ transactionHash: txHash });
       setTxMsg(`withdraw ok: ${txHash}`);
       setWithdrawYab("");
+      await refresh();
+      await refreshBalances();
+      await refreshHyperion();
+    } catch (e) {
+      setTxMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitDepositUsdc() {
+    if (!connected || !account) {
+      setTxMsg("Connect wallet first");
+      return;
+    }
+    setBusy(true);
+    setTxMsg(null);
+    try {
+      const aptos = getAptos();
+      const raw = parseToRaw(depositB, tokenBDecimals);
+      if (raw <= 0n) {
+        setTxMsg("Amount must be > 0");
+        return;
+      }
+      if (raw < MIN_DEPOSIT_TOKEN_B_DUAL) {
+        setTxMsg(
+          `token_b_in must be ≥ ${MIN_DEPOSIT_TOKEN_B_DUAL.toString()} raw (min deposit)`,
+        );
+        return;
+      }
+      const pending = await signAndSubmitTransaction({
+        data: {
+          function: `${MODULE_ADDRESS}::vault::deposit_usdc`,
+          functionArguments: [VAULT_ADDRESS_NORMALIZED, toEntryU64(raw)],
+        },
+      });
+      const txHash = transactionHashFromSubmit(pending);
+      await aptos.waitForTransaction({ transactionHash: txHash });
+      setTxMsg(`deposit_usdc ok: ${txHash}`);
       await refresh();
       await refreshBalances();
       await refreshHyperion();
@@ -495,19 +551,37 @@ export default function App() {
               </p>
             )}
             {balanceYab != null && (
-              <p className="bal-line">
-                {YAB_SYMBOL} (FA primary store):{" "}
-                <strong>
-                  {formatRaw(balanceYab, YAB_DECIMALS)} {YAB_SYMBOL}
-                </strong>
-                {walletYabUsd != null && (
-                  <span className="usd"> ≈ {formatUsd(walletYabUsd)}</span>
+              <div className="bal-block">
+                <p className="bal-line">
+                  {YAB_SYMBOL} (FA primary store):{" "}
+                  <strong>
+                    {formatRaw(balanceYab, YAB_DECIMALS)} {YAB_SYMBOL}
+                  </strong>
+                  {walletYabUsd != null && (
+                    <span className="usd"> ≈ {formatUsd(walletYabUsd)}</span>
+                  )}
+                  <span className="muted">
+                    {" "}
+                    — {balanceYab.toString()} raw
+                  </span>
+                </p>
+                {walletYabSharePct != null && data && (
+                  <p className="hint">
+                    ≈{" "}
+                    {walletYabSharePct < 0.01
+                      ? walletYabSharePct.toFixed(4)
+                      : walletYabSharePct < 1
+                        ? walletYabSharePct.toFixed(3)
+                        : walletYabSharePct.toFixed(2)}
+                    % of YAB supply ({data.yabSupplyRaw.toString()} raw). USD uses
+                    the same spot pool NAV as &quot;Total assets&quot; above (your
+                    pro-rata share). A small balance in &quot;full&quot; YAB is
+                    normal when supply is mostly raw units. Shares minted before
+                    the USDC accounting fix are not re-issued — new deposits use
+                    the upgraded module.
+                  </p>
                 )}
-                <span className="muted">
-                  {" "}
-                  — {balanceYab.toString()} raw
-                </span>
-              </p>
+              </div>
             )}
             <button
               type="button"
@@ -560,6 +634,49 @@ export default function App() {
           onClick={() => void submitDeposit(true)}
         >
           {busy ? "…" : "deposit"}
+        </button>
+      </section>
+
+      <section className="card">
+        <h2>Deposit ({TOKEN_B_SYMBOL} only)</h2>
+        <p className="hint">
+          Pulls {TOKEN_B_SYMBOL} from your primary FA store, swaps part B→{TOKEN_A_SYMBOL}{" "}
+          per strategy band, then adds liquidity. Amount defaults to wallet balance. Min{" "}
+          {MIN_DEPOSIT_TOKEN_B_DUAL.toString()} raw ({TOKEN_B_SYMBOL}).
+        </p>
+        <label className="field">
+          Amount ({TOKEN_B_SYMBOL})
+          <div className="row-input">
+            <input
+              value={depositB}
+              onChange={(e) => {
+                setDepositBEdited(true);
+                setDepositB(e.target.value);
+              }}
+              className="input"
+              disabled={busy}
+            />
+            <button
+              type="button"
+              className="btn secondary"
+              disabled={busy || balanceB == null || balanceB === 0n}
+              onClick={() => {
+                if (balanceB == null) return;
+                setDepositBEdited(false);
+                setDepositB(formatRaw(balanceB, tokenBDecimals));
+              }}
+            >
+              Max
+            </button>
+          </div>
+        </label>
+        <button
+          type="button"
+          className="btn"
+          disabled={busy || !connected}
+          onClick={() => void submitDepositUsdc()}
+        >
+          {busy ? "…" : "deposit_usdc"}
         </button>
       </section>
 

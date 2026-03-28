@@ -1,3 +1,6 @@
+/** Token-B (USDC) 6-dec raw → token-A 8-dec raw; matches `vault::usdc_raw_to_btc_raw_equiv` (×10^10 / btc_price). */
+const USDC_TO_BTC_RAW_MULT = 10_000_000_000n;
+
 /**
  * Mirrors vault.move `get_total_assets`: token-B leg converted to token-A equivalent at vault-scale BTC/USD price.
  * `btcPrice8dec` = USD per 1 BTC with 8 fractional digits (same scale as on-chain).
@@ -10,16 +13,15 @@ export function totalAssetsTokenAEquiv(
   btcPrice8dec: bigint,
 ): bigint {
   if (btcPrice8dec <= 0n) return 0n;
-  const scale = 100_000_000n;
   const posEquiv =
-    positionBtc + (positionUsdc * scale) / btcPrice8dec;
-  const freeEquiv = freeBtc + (freeUsdc * scale) / btcPrice8dec;
+    positionBtc + (positionUsdc * USDC_TO_BTC_RAW_MULT) / btcPrice8dec;
+  const freeEquiv = freeBtc + (freeUsdc * USDC_TO_BTC_RAW_MULT) / btcPrice8dec;
   return posEquiv + freeEquiv;
 }
 
 /**
  * USDC → token-A equivalent raw (vault-style): two truncating divisions, not one on the sum.
- * Matches `position_usdc * scale / price` + `free_usdc * scale / price`.
+ * Matches `usdc_raw_to_btc_raw_equiv` for position + free USDC legs.
  */
 export function usdcLegToTokenAEquivRaw(
   positionUsdc: bigint,
@@ -27,10 +29,9 @@ export function usdcLegToTokenAEquivRaw(
   btcPrice8dec: bigint,
 ): bigint {
   if (btcPrice8dec <= 0n) return 0n;
-  const scale = 100_000_000n;
   return (
-    (positionUsdc * scale) / btcPrice8dec +
-    (freeUsdc * scale) / btcPrice8dec
+    (positionUsdc * USDC_TO_BTC_RAW_MULT) / btcPrice8dec +
+    (freeUsdc * USDC_TO_BTC_RAW_MULT) / btcPrice8dec
   );
 }
 

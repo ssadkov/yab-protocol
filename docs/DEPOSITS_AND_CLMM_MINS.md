@@ -37,8 +37,7 @@ This is **not** caused by changing `range_half_width_bps` alone; it appears when
 - Swap split (symmetric to WBTC-only):  
   **`swap_amount_b = total_b * btc_ratio / 10000`** is swapped **B → A** via **`pool_v3::swap(..., false, true, ...)`** (same direction as USDC→WBTC in **`withdraw`** when swapping removed liquidity).
 - **`add_liquidity_by_contract`** with **`min_a = min_b = 0`**.
-- **Shares**: same economics as **`deposit_dual`** for the B leg — BTC-equivalent notional  
-  **`token_b_in * 10^8 / btc_price`**, then mint against **`yab_price`** (see implementation).
+- **Shares**: same economics as **`deposit_dual`** for the B leg — BTC-equivalent notional via **`usdc_raw_to_btc_raw_equiv`** (**6-dec** USDC raw → 8-dec WBTC-style raw: **`token_b_in * 10^10 / btc_price`**), then mint against **`yab_price`** (see `vault.move`).
 
 **Minimums:** **`token_b_in >= MIN_DEPOSIT_TOKEN_B_DUAL`** when enforcement is on; after a B→A swap, **`MIN_POST_SWAP_TOKEN_A`** must be met on the resulting WBTC leg (see constants in `vault.move`).
 

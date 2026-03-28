@@ -18,11 +18,16 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     server: {
+      host: true,
       port: 5173,
+      // If 5173 is taken, Vite picks the next free port (see terminal URL).
+      strictPort: false,
       proxy: hyperionProxy,
     },
     preview: {
+      host: true,
       port: 4173,
+      strictPort: false,
       proxy: hyperionProxy,
     },
   };
