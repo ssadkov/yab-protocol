@@ -638,7 +638,7 @@ module yab::vault {
         vault_addr: address,
         token_a_in: u64,
         token_b_in: u64,
-    ) acquires VaultState, YabRefs, VaultStrategy, UserCheckpoint {
+    ) acquires VaultState, YabRefs, UserCheckpoint {
         deposit_dual_impl(user, vault_addr, token_a_in, token_b_in, option::none(), true);
     }
 
@@ -660,7 +660,7 @@ module yab::vault {
         token_a_in: u64,
         token_b_in: u64,
         btc_usd_price: u64,
-    ) acquires VaultState, YabRefs, VaultStrategy, UserCheckpoint {
+    ) acquires VaultState, YabRefs, UserCheckpoint {
         deposit_dual_impl(
             user,
             vault_addr,
@@ -678,7 +678,7 @@ module yab::vault {
         token_b_in: u64,
         price_override: option::Option<u64>,
         enforce_min_deposit: bool,
-    ) acquires VaultState, YabRefs, VaultStrategy, UserCheckpoint {
+    ) acquires VaultState, YabRefs, UserCheckpoint {
         assert!(token_a_in > 0 && token_b_in > 0, errors::zero_amount());
         if (enforce_min_deposit) {
             assert!(token_a_in >= MIN_DEPOSIT_TOKEN_A, errors::deposit_too_small());
@@ -695,11 +695,6 @@ module yab::vault {
         let yab_price = {
             let s = borrow_global<VaultState>(vault_addr);
             get_yab_price(s, vault_addr, btc_price)
-        };
-
-        let slip_bps = {
-            let st = borrow_global<VaultStrategy>(vault_addr);
-            strat::max_swap_slippage_bps(&st.params)
         };
 
         let (meta_a, meta_b, pos_addr) = {
@@ -733,8 +728,9 @@ module yab::vault {
         let position = object::address_to_object<position_v3::Info>(pos_addr);
         let amount_a_desired = fungible_asset::amount(&fa_a_total);
         let amount_b_desired = fungible_asset::amount(&fa_b_total);
-        let min_a = amount_a_desired * (10000 - slip_bps) / 10000;
-        let min_b = amount_b_desired * (10000 - slip_bps) / 10000;
+        // Same as single-asset `deposit`: avoid Hyperion `EAMOUNT_*_TOO_LESS` from slip floors on CLMM adds.
+        let min_a = 0u64;
+        let min_b = 0u64;
         let deadline = timestamp::now_seconds() + DEADLINE_SECS;
 
         let (used_a, used_b, leftover_a, leftover_b) = router_v3::add_liquidity_by_contract(
@@ -804,12 +800,9 @@ module yab::vault {
             get_yab_price(s, vault_addr, btc_price)
         };
 
-        let (half_bps, slip_bps) = {
+        let half_bps = {
             let st = borrow_global<VaultStrategy>(vault_addr);
-            (
-                strat::range_half_width_bps(&st.params),
-                strat::max_swap_slippage_bps(&st.params),
-            )
+            strat::range_half_width_bps(&st.params)
         };
 
         let (meta_a, meta_b, fee_tier_val, pos_addr) = {
@@ -888,8 +881,8 @@ module yab::vault {
         let position = object::address_to_object<position_v3::Info>(pos_addr);
         let amount_a_desired = fungible_asset::amount(&fa_a_total);
         let amount_b_desired = fungible_asset::amount(&fa_b_for_lp);
-        let min_a = amount_a_desired * (10000 - slip_bps) / 10000;
-        // TEMP: min_b = 0 while mock oracle + small deposits; restore slippage when Pyth is live.
+        // CLMM rounding: slip-derived mins often trip Hyperion `EAMOUNT_*_TOO_LESS` on small deposits.
+        let min_a = 0u64;
         let min_b = 0u64;
         let deadline = timestamp::now_seconds() + DEADLINE_SECS;
 

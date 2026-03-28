@@ -20,7 +20,11 @@ Aptos Move vault around a Hyperion v3 CLMM position, YAB fungible shares, and a 
 | Stale Pyth or price spike vs `last_recorded_price` | `oracle` — refresh Hermes in the same tx path where possible; see **`sync_oracle_baseline_with_pyth_update`** (admin) for an emergency baseline reset. |
 | `rebalance_not_needed` | Oracle move vs `center_price` below **`rebalance_trigger_bps`**. |
 | `rebalance_too_early` | Wall-clock interval &lt; **`min_rebalance_interval_secs`**. |
-| Hyperion `router_v3` liquidity errors | Often slippage / CLMM rounding; **`rebalance` uses `min_b = 0`** on `add_liquidity` (same idea as `deposit_dual`). If issues persist, consider raising **`max_swap_slippage_bps`** temporarily via **`set_strategy_params`**. |
+| Hyperion `router_v3` liquidity errors (`EAMOUNT_*_TOO_LESS`) | CLMM `add_liquidity` often uses less of a leg than slip-derived floors expect. **`rebalance`** sets **`min_b = 0`** and keeps **`min_a`** from **`max_swap_slippage_bps`**. If **`EAMOUNT_A_TOO_LESS`** appears, raise **`max_swap_slippage_bps`** via **`set_strategy_params`** or align with a package that sets **`min_a = 0`** on rebalance too. |
+
+### Deposit (`vault::deposit` / `vault::deposit_dual`)
+
+Single-asset **`deposit`** swaps part of WBTC per **`range_half_width_bps`**, then calls **`add_liquidity_by_contract`** with **`min_a = 0`** and **`min_b = 0`** so Hyperion does not revert on small deposits (**`EAMOUNT_A_TOO_LESS`** / **`EAMOUNT_B_TOO_LESS`**). **`deposit_dual`** uses the same zero mins (no in-contract swap).
 
 ### Strategy parameters (`VaultStrategy.params`)
 
@@ -31,7 +35,7 @@ Governance can update **`range_half_width_bps`**, **`rebalance_trigger_bps`**, a
 | **`range_half_width_bps`** | Used in **`math::sqrt_bps_band_around_current`**: builds **`[sqrt_lo, sqrt_hi]`** as `sqrt_current × (1 ± half/10000)`. That band feeds **`btc_ratio_bps`**, which drives **how much token A is swapped to token B** before re-adding liquidity. **Not** the same as “±X% on BTC/USD spot” literally. | `500` (~±5% on **sqrt**) |
 | **`rebalance_trigger_bps`** | Rebalance allowed when **`|oracle − center_price| / center_price ≥ trigger/10000`** (ratio computed in **u128** to avoid overflow). | `400` (4%) |
 | **`min_rebalance_interval_secs`** | Minimum seconds after **`last_rebalance_ts`**. | `1800` (30 min) |
-| **`max_swap_slippage_bps`** | Lower bound **`min_a`** for **`add_liquidity_by_contract`**; token **B** leg uses **`min_b = 0`** in **`rebalance`**. | `30` (0.3%) |
+| **`max_swap_slippage_bps`** | Used for **`min_a`** on **`rebalance`** `add_liquidity` ( **`min_b = 0`** there). **`deposit`** / **`deposit_dual`** do not use it for add-liquidity mins (both mins are **0**). | `30` (0.3%) |
 | **`dust_reinvest_threshold_bps`** | Dust reinvest threshold (other flows). | `10` |
 
 #### Why avoid `range_half_width_bps = 10000`
