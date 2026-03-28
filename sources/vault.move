@@ -87,6 +87,13 @@ module yab::vault {
     }
 
     #[event]
+    struct WithdrawnUsdc has drop, store {
+        user: address,
+        shares_burned: u64,
+        usdc_out: u64,
+    }
+
+    #[event]
     struct Rebalanced has drop, store {
         old_center: u64,
         new_center: u64,
@@ -128,6 +135,14 @@ module yab::vault {
     /// USDC (6-dec raw) → WBTC-style 8-dec raw at vault oracle `btc_price` scale.
     fun usdc_raw_to_btc_raw_equiv(usdc_raw: u64, btc_price: u64): u64 {
         (((usdc_raw as u128) * USDC_TO_BTC_RAW_MULT) / (btc_price as u128)) as u64
+    }
+
+    /// Inverse: token-A 8-dec raw → USDC 6-dec raw. Same `USDC_TO_BTC_RAW_MULT` as `usdc_raw_to_btc_raw_equiv`.
+    fun btc_raw_to_usdc_raw(btc_a_raw: u64, btc_price: u64): u64 {
+        if (btc_a_raw == 0 || btc_price == 0) {
+            return 0
+        };
+        (((btc_a_raw as u128) * (btc_price as u128)) / USDC_TO_BTC_RAW_MULT) as u64
     }
 
     fun resolve_oracle_price(last_recorded: u64, price_override: option::Option<u64>): u64 {
@@ -1266,6 +1281,207 @@ module yab::vault {
         event::emit(Withdrawn { user: user_addr, shares_burned: shares_in, btc_out: btc_owed });
     }
 
+    /// Burn YAB and receive token B (USDC 6-dec); same NAV as `withdraw` (`btc_owed` → `usdc_owed` at oracle).
+    public entry fun withdraw_usdc(
+        user: &signer,
+        vault_addr: address,
+        shares_in: u64,
+    ) acquires VaultState, YabRefs {
+        withdraw_usdc_impl(user, vault_addr, shares_in, option::none());
+    }
+
+    /// Same as `withdraw_usdc` with Pyth price update in the same transaction.
+    public entry fun withdraw_usdc_with_pyth_update(
+        user: &signer,
+        vault_addr: address,
+        shares_in: u64,
+        pyth_update_data: vector<vector<u8>>,
+    ) acquires VaultState, YabRefs {
+        let update_fee = pyth::get_update_fee(&pyth_update_data);
+        let fee_coin = coin::withdraw<aptos_coin::AptosCoin>(user, update_fee);
+        pyth::update_price_feeds(pyth_update_data, fee_coin);
+        withdraw_usdc_impl(user, vault_addr, shares_in, option::none());
+    }
+
+    #[test_only]
+    public fun withdraw_usdc_with_fixed_oracle(
+        user: &signer,
+        vault_addr: address,
+        shares_in: u64,
+        btc_usd_price: u64,
+    ) acquires VaultState, YabRefs {
+        withdraw_usdc_impl(user, vault_addr, shares_in, option::some(btc_usd_price));
+    }
+
+    fun withdraw_usdc_impl(
+        user: &signer,
+        vault_addr: address,
+        shares_in: u64,
+        price_override: option::Option<u64>,
+    ) acquires VaultState, YabRefs {
+        assert!(shares_in > 0, errors::zero_amount());
+        let user_addr = signer::address_of(user);
+
+        let btc_price = {
+            let s = borrow_global<VaultState>(vault_addr);
+            resolve_oracle_price(s.last_recorded_price, price_override)
+        };
+
+        let yab_price = {
+            let s = borrow_global<VaultState>(vault_addr);
+            get_yab_price(s, vault_addr, btc_price)
+        };
+
+        let (meta_a, meta_b, fee_tier_val, pos_addr) = {
+            let s = borrow_global<VaultState>(vault_addr);
+            (
+                object::address_to_object<Metadata>(s.token_a_metadata),
+                object::address_to_object<Metadata>(s.token_b_metadata),
+                s.fee_tier,
+                s.position_address,
+            )
+        };
+        let pool = pool_v3::liquidity_pool(meta_a, meta_b, fee_tier_val);
+
+        let btc_owed = shares_in * yab_price / 100_000_000;
+        let usdc_owed = btc_raw_to_usdc_raw(btc_owed, btc_price);
+        assert!(usdc_owed > 0, errors::deposit_too_small());
+
+        let state = borrow_global_mut<VaultState>(vault_addr);
+        state.last_recorded_price = btc_price;
+
+        let vault_signer = object::generate_signer_for_extending(&state.extend_ref);
+
+        let need_after_free_usdc = if (state.free_usdc >= usdc_owed) {
+            let fa = primary_fungible_store::withdraw(&vault_signer, meta_b, usdc_owed);
+            state.free_usdc = state.free_usdc - usdc_owed;
+            primary_fungible_store::deposit(user_addr, fa);
+            0u64
+        } else {
+            if (state.free_usdc > 0) {
+                let take_u = state.free_usdc;
+                let fa = primary_fungible_store::withdraw(&vault_signer, meta_b, take_u);
+                state.free_usdc = 0;
+                primary_fungible_store::deposit(user_addr, fa);
+                usdc_owed - take_u
+            } else {
+                usdc_owed
+            }
+        };
+
+        let need_after_free_btc = if (need_after_free_usdc > 0 && state.free_btc > 0) {
+            let take_a = state.free_btc;
+            let fa_a = primary_fungible_store::withdraw(&vault_signer, meta_a, take_a);
+            state.free_btc = 0;
+            let limit = swap_sqrt_price_limit(pool, true);
+            let (_o, fa_mid, fa_b_out) = pool_v3::swap(
+                pool,
+                true,
+                true,
+                take_a,
+                fa_a,
+                limit,
+            );
+            if (fungible_asset::amount(&fa_mid) > 0) {
+                let mid_a = fungible_asset::amount(&fa_mid);
+                state.free_btc = state.free_btc + mid_a;
+                primary_fungible_store::deposit(vault_addr, fa_mid);
+            } else {
+                fungible_asset::destroy_zero(fa_mid);
+            };
+            let out_b = fungible_asset::amount(&fa_b_out);
+            primary_fungible_store::deposit(user_addr, fa_b_out);
+            if (out_b >= need_after_free_usdc) {
+                0u64
+            } else {
+                need_after_free_usdc - out_b
+            }
+        } else {
+            need_after_free_usdc
+        };
+
+        if (need_after_free_btc > 0) {
+            let pos_obj = object::address_to_object<position_v3::Info>(pos_addr);
+            let pos_liq = position_v3::get_liquidity(pos_obj);
+            let pos_equiv = position_btc_equiv(state, btc_price);
+            assert!(pos_equiv > 0, errors::zero_supply());
+            let need_btc_equiv = usdc_raw_to_btc_raw_equiv(need_after_free_btc, btc_price);
+            let liq_rm = {
+                let x = (pos_liq * (need_btc_equiv as u128)) / ((pos_equiv as u128) + 1);
+                if (x > pos_liq) {
+                    pos_liq
+                } else {
+                    x
+                }
+            };
+            if (liq_rm > 0) {
+                let deadline = timestamp::now_seconds() + DEADLINE_SECS;
+                let (opt_a, opt_b) = router_v3::remove_liquidity_by_contract(
+                    &vault_signer,
+                    pos_obj,
+                    liq_rm,
+                    0,
+                    0,
+                    deadline,
+                );
+                if (option::is_some(&opt_b)) {
+                    let fa_b = option::destroy_some(opt_b);
+                    let b_amt = fungible_asset::amount(&fa_b);
+                    if (state.position_usdc >= b_amt) {
+                        state.position_usdc = state.position_usdc - b_amt;
+                    } else {
+                        state.position_usdc = 0;
+                    };
+                    primary_fungible_store::deposit(user_addr, fa_b);
+                } else {
+                    option::destroy_none(opt_b);
+                };
+                if (option::is_some(&opt_a)) {
+                    let fa_a = option::destroy_some(opt_a);
+                    let a_amt = fungible_asset::amount(&fa_a);
+                    if (state.position_btc >= a_amt) {
+                        state.position_btc = state.position_btc - a_amt;
+                    } else {
+                        state.position_btc = 0;
+                    };
+                    let limit2 = swap_sqrt_price_limit(pool, true);
+                    let (_o2, fa_mid2, fa_b_swap) = pool_v3::swap(
+                        pool,
+                        true,
+                        true,
+                        a_amt,
+                        fa_a,
+                        limit2,
+                    );
+                    if (fungible_asset::amount(&fa_mid2) > 0) {
+                        let mid2 = fungible_asset::amount(&fa_mid2);
+                        state.free_btc = state.free_btc + mid2;
+                        primary_fungible_store::deposit(vault_addr, fa_mid2);
+                    } else {
+                        fungible_asset::destroy_zero(fa_mid2);
+                    };
+                    primary_fungible_store::deposit(user_addr, fa_b_swap);
+                } else {
+                    option::destroy_none(opt_a);
+                };
+            };
+        };
+
+        let refs = borrow_global<YabRefs>(vault_addr);
+        let user_yab = primary_fungible_store::withdraw(
+            user,
+            object::address_to_object<Metadata>(vault_addr),
+            shares_in,
+        );
+        fungible_asset::burn(&refs.burn_ref, user_yab);
+
+        event::emit(WithdrawnUsdc {
+            user: user_addr,
+            shares_burned: shares_in,
+            usdc_out: usdc_owed,
+        });
+    }
+
     /// Operator (or admin): collect CLMM fees + gauge rewards, convert rewards to token A where needed, credit `free_*`.
     public entry fun claim_rewards(
         operator: &signer,
@@ -1645,6 +1861,12 @@ module yab::vault {
     /// Exposes USDC (6-dec) raw → 8-dec BTC raw; for `aptos move test` only.
     public fun e2e_usdc_raw_to_btc_raw_equiv(usdc_raw: u64, btc_price: u64): u64 {
         usdc_raw_to_btc_raw_equiv(usdc_raw, btc_price)
+    }
+
+    #[test_only]
+    /// Exposes 8-dec BTC raw → USDC (6-dec) raw; inverse of `e2e_usdc_raw_to_btc_raw_equiv` at same `btc_price`.
+    public fun e2e_btc_raw_to_usdc_raw(btc_a_raw: u64, btc_price: u64): u64 {
+        btc_raw_to_usdc_raw(btc_a_raw, btc_price)
     }
 
     #[test_only]

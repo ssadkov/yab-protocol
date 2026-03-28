@@ -86,4 +86,34 @@ module yab::vault_tests {
         let out = vault::e2e_usdc_raw_to_btc_raw_equiv(one_usdc, btc_px);
         assert!(out == 1495, 1);
     }
+
+    // When `btc_a_raw * btc_price` is divisible by 10^10, BTC→USDC→BTC is exact.
+    #[test]
+    fun test_btc_usdc_btc_roundtrip_exact() {
+        let btc_price: u64 = 10_000_000_000; // 1e10 — exercises same divisor as USDC_TO_BTC_RAW_MULT
+        let btc_a: u64 = 12_345_678;
+        let usdc = vault::e2e_btc_raw_to_usdc_raw(btc_a, btc_price);
+        let back = vault::e2e_usdc_raw_to_btc_raw_equiv(usdc, btc_price);
+        assert!(back == btc_a, 1);
+    }
+
+    // USDC→BTC→USDC never exceeds the starting USDC (truncating divisions).
+    #[test]
+    fun test_usdc_btc_usdc_roundtrip_bounded() {
+        let btc_px: u64 = 6686227436716;
+        let usdc_in: u64 = 1_000_000;
+        let btc_mid = vault::e2e_usdc_raw_to_btc_raw_equiv(usdc_in, btc_px);
+        let usdc_out = vault::e2e_btc_raw_to_usdc_raw(btc_mid, btc_px);
+        assert!(usdc_out <= usdc_in, 1);
+        assert!(usdc_out > 0, 2);
+    }
+
+    // Pairs with `test_usdc_raw_to_btc_raw_equiv_scale`: 1495 token-A raw ↔ sub-1-USDC at that oracle.
+    #[test]
+    fun test_btc_raw_to_usdc_raw_inverse_scale() {
+        let btc_px: u64 = 6686227436716;
+        let btc_a: u64 = 1495;
+        let usdc = vault::e2e_btc_raw_to_usdc_raw(btc_a, btc_px);
+        assert!(usdc == 999_591, 1);
+    }
 }

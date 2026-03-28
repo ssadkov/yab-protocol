@@ -29,6 +29,7 @@ import {
 } from "./useHyperionVaultPosition";
 import { useVaultData } from "./useVaultData";
 import { useWalletBalances } from "./useWalletBalances";
+import { btcRawToUsdcRaw } from "./vaultMath";
 
 export default function App() {
   const {
@@ -89,6 +90,12 @@ export default function App() {
       return null;
     }
   }, [data, withdrawYab]);
+
+  /** Same economics as `withdraw_usdc`: `usdc_owed = btc_raw_to_usdc_raw(btc_owed, btc_price)`. */
+  const withdrawEstimateUsdcRaw = useMemo(() => {
+    if (!data || withdrawEstimateBtcRaw == null) return null;
+    return btcRawToUsdcRaw(withdrawEstimateBtcRaw, data.btcUsdPriceRaw);
+  }, [data, withdrawEstimateBtcRaw]);
 
   const navUsd = useMemo(() => {
     if (!data) return null;
@@ -196,6 +203,58 @@ export default function App() {
       const txHash = transactionHashFromSubmit(pending);
       await aptos.waitForTransaction({ transactionHash: txHash });
       setTxMsg(`withdraw ok: ${txHash}`);
+      setWithdrawYab("");
+      await refresh();
+      await refreshBalances();
+      await refreshHyperion();
+    } catch (e) {
+      setTxMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitWithdrawUsdc() {
+    if (!connected || !account) {
+      setTxMsg("Connect wallet first");
+      return;
+    }
+    if (balanceYab == null) {
+      setTxMsg("YAB balance not loaded");
+      return;
+    }
+    setBusy(true);
+    setTxMsg(null);
+    try {
+      const aptos = getAptos();
+      let raw: bigint;
+      try {
+        raw = parseToRaw(withdrawYab, YAB_DECIMALS);
+      } catch (e) {
+        setTxMsg(e instanceof Error ? e.message : String(e));
+        return;
+      }
+      if (raw <= 0n) {
+        setTxMsg("Amount must be > 0");
+        return;
+      }
+      if (raw > balanceYab) {
+        setTxMsg("Amount exceeds YAB balance");
+        return;
+      }
+      if (raw > U64_MAX) {
+        setTxMsg("Amount too large for chain (u64)");
+        return;
+      }
+      const pending = await signAndSubmitTransaction({
+        data: {
+          function: `${MODULE_ADDRESS}::vault::withdraw_usdc`,
+          functionArguments: [VAULT_ADDRESS_NORMALIZED, toEntryU64(raw)],
+        },
+      });
+      const txHash = transactionHashFromSubmit(pending);
+      await aptos.waitForTransaction({ transactionHash: txHash });
+      setTxMsg(`withdraw_usdc ok: ${txHash}`);
       setWithdrawYab("");
       await refresh();
       await refreshBalances();
@@ -799,6 +858,30 @@ export default function App() {
           onClick={() => void submitWithdraw()}
         >
           {busy ? "…" : "Withdraw"}
+        </button>
+        <p className="hint" style={{ marginTop: "1rem" }}>
+          <strong>{TOKEN_B_SYMBOL}</strong> payout uses the same share economics; estimate converts{" "}
+          <code className="mono">btc_owed</code> at the vault oracle (
+          <code className="mono">btc_raw_to_usdc_raw</code>).
+        </p>
+        {withdrawEstimateUsdcRaw != null && data && (
+          <p className="hint">
+            ≈ <strong>{formatRaw(withdrawEstimateUsdcRaw, tokenBDecimals)}</strong>{" "}
+            {TOKEN_B_SYMBOL} expected (oracle nominal, before slippage)
+          </p>
+        )}
+        <button
+          type="button"
+          className="btn secondary"
+          disabled={
+            busy ||
+            !connected ||
+            balanceYab == null ||
+            balanceYab === 0n
+          }
+          onClick={() => void submitWithdrawUsdc()}
+        >
+          {busy ? "…" : "withdraw_usdc"}
         </button>
       </section>
 

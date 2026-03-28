@@ -1,5 +1,11 @@
-/** Token-B (USDC) 6-dec raw → token-A 8-dec raw; matches `vault::usdc_raw_to_btc_raw_equiv` (×10^10 / btc_price). */
+/** Token-B (USDC) 6-dec raw ↔ token-A 8-dec raw; matches `vault::USDC_TO_BTC_RAW_MULT` (10^10). */
 const USDC_TO_BTC_RAW_MULT = 10_000_000_000n;
+
+/** Token-A 8-dec raw → USDC 6-dec raw at vault oracle scale; inverse of dividing USDC by `btcPrice8dec` via `usdc_raw_to_btc_raw_equiv`. */
+export function btcRawToUsdcRaw(btcARaw: bigint, btcPrice8dec: bigint): bigint {
+  if (btcARaw <= 0n || btcPrice8dec <= 0n) return 0n;
+  return (btcARaw * btcPrice8dec) / USDC_TO_BTC_RAW_MULT;
+}
 
 /**
  * Mirrors vault.move `get_total_assets`: token-B leg converted to token-A equivalent at vault-scale BTC/USD price.
