@@ -3,12 +3,14 @@ import { shortAddress } from "../addresses";
 
 type GovernanceIdentityProps = {
   vaultAddress: string;
+  vaultExplorerUrl: string;
   performanceFeeBpsLabel: string | null;
   performanceFeePercentLabel: string | null;
 };
 
 export function GovernanceIdentity({
   vaultAddress,
+  vaultExplorerUrl,
   performanceFeeBpsLabel,
   performanceFeePercentLabel,
 }: GovernanceIdentityProps) {
@@ -31,10 +33,6 @@ export function GovernanceIdentity({
           Vault Governance
         </h4>
         <div className="space-y-3">
-          <div className="flex items-center justify-between py-2">
-            <span className="text-sm text-on-surface-variant">Management Fee</span>
-            <span className="font-mono text-sm text-on-surface-variant">—</span>
-          </div>
           <div className="flex items-center justify-between py-2">
             <span className="text-sm text-on-surface-variant">Performance Fee</span>
             <span className="font-mono text-sm text-secondary">
@@ -74,6 +72,15 @@ export function GovernanceIdentity({
                 >
                   content_copy
                 </button>
+                <a
+                  href={vaultExplorerUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="material-symbols-outlined shrink-0 text-sm text-on-surface-variant hover:text-primary"
+                  title="View on Aptos Explorer"
+                >
+                  open_in_new
+                </a>
               </div>
               {copied && (
                 <p className="mt-1 text-[10px] text-primary">Copied</p>
@@ -84,7 +91,7 @@ export function GovernanceIdentity({
                 Price Oracle
               </p>
               <div className="flex items-center gap-2 truncate font-mono text-xs text-on-surface">
-                Vault BTC/USD cache
+                Pyth Network (Aptos)
                 <span className="material-symbols-outlined text-sm text-primary">verified</span>
               </div>
             </div>

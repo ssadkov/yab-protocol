@@ -1,5 +1,32 @@
 /** Token-B (USDC) 6-dec raw ↔ token-A 8-dec raw; matches `vault::USDC_TO_BTC_RAW_MULT` (10^10). */
-const USDC_TO_BTC_RAW_MULT = 10_000_000_000n;
+export const USDC_TO_BTC_RAW_MULT = 10_000_000_000n;
+
+/** USDC raw → BTC-equivalent raw at vault oracle scale (`usdc_raw_to_btc_raw_equiv`). */
+export function usdcRawToBtcRawEquiv(
+  usdcRaw: bigint,
+  btcPrice8dec: bigint,
+): bigint {
+  if (btcPrice8dec <= 0n) return 0n;
+  return (usdcRaw * USDC_TO_BTC_RAW_MULT) / btcPrice8dec;
+}
+
+/** Mirrors `deposit`: `shares = token_a_in * 10^8 / yab_price`. */
+export function estimateYabMintRawFromTokenA(
+  tokenARaw: bigint,
+  yabPriceRaw: bigint,
+): bigint {
+  if (yabPriceRaw <= 0n) return 0n;
+  return (tokenARaw * 100_000_000n) / yabPriceRaw;
+}
+
+/** Mirrors `deposit_dual` / USDC leg: `shares = btc_in_equiv * 10^8 / yab_price`. */
+export function estimateYabMintRawFromBtcEquiv(
+  btcEquivRaw: bigint,
+  yabPriceRaw: bigint,
+): bigint {
+  if (yabPriceRaw <= 0n) return 0n;
+  return (btcEquivRaw * 100_000_000n) / yabPriceRaw;
+}
 
 /** Token-A 8-dec raw → USDC 6-dec raw at vault oracle scale; inverse of dividing USDC by `btcPrice8dec` via `usdc_raw_to_btc_raw_equiv`. */
 export function btcRawToUsdcRaw(btcARaw: bigint, btcPrice8dec: bigint): bigint {

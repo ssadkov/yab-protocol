@@ -1,6 +1,4 @@
 import {
-  MIN_DEPOSIT_TOKEN_A,
-  MIN_DEPOSIT_TOKEN_B_DUAL,
   TOKEN_A_SYMBOL,
   TOKEN_B_SYMBOL,
   YAB_DECIMALS,
@@ -50,6 +48,11 @@ type TransactionPanelProps = {
   slippageLabel: string;
   expectedOutputDeposit: string | null;
   expectedUsdDeposit: string | null;
+  expectedOutputDual: string | null;
+  expectedUsdDual: string | null;
+  /** Human-readable minimum deposit amounts (token units, not raw). */
+  minDepositHintDepositTab: string;
+  minDepositHintDualTab: string;
   withdrawEstimateBtc: string | null;
   withdrawEstimateUsdc: string | null;
 };
@@ -94,6 +97,10 @@ export function TransactionPanel(props: TransactionPanelProps) {
     slippageLabel,
     expectedOutputDeposit,
     expectedUsdDeposit,
+    expectedOutputDual,
+    expectedUsdDual,
+    minDepositHintDepositTab,
+    minDepositHintDualTab,
     withdrawEstimateBtc,
     withdrawEstimateUsdc,
   } = props;
@@ -245,7 +252,9 @@ export function TransactionPanel(props: TransactionPanelProps) {
               </div>
               <div className="flex justify-between text-xs">
                 <span className="text-on-surface-variant">Slippage tolerance</span>
-                <span className="font-mono text-primary">{slippageLabel}</span>
+                <span className="max-w-[58%] text-right font-mono text-[11px] text-primary">
+                  {slippageLabel}
+                </span>
               </div>
               <div className="flex justify-between border-t border-outline-variant/10 pt-2">
                 <span className="text-xs font-bold uppercase tracking-widest text-on-surface">
@@ -258,13 +267,16 @@ export function TransactionPanel(props: TransactionPanelProps) {
                   <p className="text-[10px] text-on-surface-variant/60">
                     {expectedUsdDeposit ?? ""}
                   </p>
+                  <p className="mt-1 text-[9px] text-on-surface-variant/50">
+                    NAV-based estimate from current yab_price; actual mint may differ after
+                    swaps and LP rounding.
+                  </p>
                 </div>
               </div>
             </div>
 
-            <p className="text-[10px] text-on-surface-variant">
-              Min {TOKEN_A_SYMBOL}: {MIN_DEPOSIT_TOKEN_A.toString()} raw. Min {TOKEN_B_SYMBOL}{" "}
-              (USDC-only path): {MIN_DEPOSIT_TOKEN_B_DUAL.toString()} raw.
+            <p className="text-[10px] leading-relaxed text-on-surface-variant">
+              {minDepositHintDepositTab}
             </p>
 
             <button
@@ -283,9 +295,8 @@ export function TransactionPanel(props: TransactionPanelProps) {
         {mainTab === "dual" && (
           <>
             <div className="space-y-4">
-              <p className="text-[10px] text-on-surface-variant">
-                Min {TOKEN_A_SYMBOL}: {MIN_DEPOSIT_TOKEN_A.toString()} raw; min{" "}
-                {TOKEN_B_SYMBOL}: {MIN_DEPOSIT_TOKEN_B_DUAL.toString()} raw.
+              <p className="text-[10px] leading-relaxed text-on-surface-variant">
+                {minDepositHintDualTab}
               </p>
               <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">
                 {TOKEN_A_SYMBOL}
@@ -330,6 +341,37 @@ export function TransactionPanel(props: TransactionPanelProps) {
                 >
                   Max
                 </button>
+              </div>
+            </div>
+            <div className="space-y-3 rounded-lg bg-surface-container-highest/30 p-4">
+              <div className="flex justify-between text-xs">
+                <span className="text-on-surface-variant">Exchange rate</span>
+                <span className="font-mono text-on-surface">
+                  {exchangeRateHint ?? "—"}
+                </span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-on-surface-variant">Slippage tolerance</span>
+                <span className="max-w-[58%] text-right font-mono text-[11px] text-primary">
+                  {slippageLabel}
+                </span>
+              </div>
+              <div className="flex justify-between border-t border-outline-variant/10 pt-2">
+                <span className="text-xs font-bold uppercase tracking-widest text-on-surface">
+                  Expected output
+                </span>
+                <div className="text-right">
+                  <p className="font-mono text-sm font-bold text-primary">
+                    {expectedOutputDual ?? "—"}
+                  </p>
+                  <p className="text-[10px] text-on-surface-variant/60">
+                    {expectedUsdDual ?? ""}
+                  </p>
+                  <p className="mt-1 text-[9px] text-on-surface-variant/50">
+                    NAV-based estimate from current yab_price; actual mint may differ after
+                    swaps and LP rounding.
+                  </p>
+                </div>
               </div>
             </div>
             <button

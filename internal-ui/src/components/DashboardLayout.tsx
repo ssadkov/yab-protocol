@@ -1,7 +1,6 @@
 import { shortAddress } from "../addresses";
 
 type DashboardLayoutProps = {
-  networkLabel: string;
   connected: boolean;
   accountAddress: string | undefined;
   wallets: readonly { name: string }[];
@@ -11,7 +10,6 @@ type DashboardLayoutProps = {
 };
 
 export function DashboardLayout({
-  networkLabel,
   connected,
   accountAddress,
   wallets,
@@ -33,26 +31,7 @@ export function DashboardLayout({
             Yield AI Bitcoin
           </span>
         </div>
-        <nav className="hidden items-center gap-8 md:flex">
-          <span className="border-b-2 border-[#2DD4BF] pb-1 text-sm font-medium text-[#2DD4BF]">
-            Dashboard
-          </span>
-          <a
-            className="text-sm font-medium text-gray-400 transition-colors hover:text-white"
-            href="#"
-            onClick={(e) => e.preventDefault()}
-          >
-            Vaults
-          </a>
-          <a
-            className="text-sm font-medium text-gray-400 transition-colors hover:text-white"
-            href="#"
-            onClick={(e) => e.preventDefault()}
-          >
-            Governance
-          </a>
-        </nav>
-        <div className="flex items-center gap-2 md:gap-4">
+        <div className="flex flex-1 items-center justify-end gap-2 md:gap-4">
           {!connected && (
             <div className="flex flex-wrap items-center justify-end gap-2">
               {wallets.map((w) => (
@@ -96,109 +75,7 @@ export function DashboardLayout({
         </div>
       </header>
 
-      <aside className="fixed left-0 top-0 z-40 hidden h-full w-64 flex-col gap-6 bg-[#1C1B1C] px-4 pb-8 pt-24 md:flex">
-        <div className="px-2">
-          {connected && accountAddress ? (
-            <div className="mb-6 flex items-center gap-3">
-              <div className="h-10 w-10 rounded-full bg-gradient-to-br from-primary to-primary-container p-[1px]">
-                <div
-                  className="h-full w-full rounded-full bg-surface-container"
-                  aria-hidden
-                />
-              </div>
-              <div>
-                <div className="text-xs font-bold text-on-surface">
-                  Sovereign Terminal
-                </div>
-                <div className="text-[10px] text-gray-500">Yield AI Bitcoin</div>
-              </div>
-            </div>
-          ) : (
-            <div className="mb-4 px-2">
-              <h2 className="font-headline mb-1 text-sm uppercase tracking-widest text-[#2DD4BF]">
-                YAB Vault
-              </h2>
-              <p className="text-[10px] uppercase tracking-widest text-slate-500">
-                {networkLabel}
-              </p>
-            </div>
-          )}
-        </div>
-
-        <nav className="flex flex-col gap-[1px] bg-[#131314]">
-          <a
-            className="flex items-center gap-3 border-r-2 border-[#2DD4BF] bg-[#2A2A2B] px-4 py-4 text-[#2DD4BF] duration-150 ease-in-out"
-            href="#"
-            onClick={(e) => e.preventDefault()}
-          >
-            <span className="material-symbols-outlined">dashboard</span>
-            Overview
-          </a>
-          <a
-            className="flex items-center gap-3 px-4 py-4 text-gray-500 transition-colors duration-150 hover:bg-[#2A2A2B] hover:text-gray-200"
-            href="#"
-            onClick={(e) => e.preventDefault()}
-          >
-            <span className="material-symbols-outlined">account_balance_wallet</span>
-            Yield Strategies
-          </a>
-          <a
-            className="flex items-center gap-3 px-4 py-4 text-gray-500 transition-colors duration-150 hover:bg-[#2A2A2B] hover:text-gray-200"
-            href="#"
-            onClick={(e) => e.preventDefault()}
-          >
-            <span className="material-symbols-outlined">water_drop</span>
-            Liquidity
-          </a>
-          <a
-            className="flex items-center gap-3 px-4 py-4 text-gray-500 transition-colors duration-150 hover:bg-[#2A2A2B] hover:text-gray-200"
-            href="#"
-            onClick={(e) => e.preventDefault()}
-          >
-            <span className="material-symbols-outlined">monitoring</span>
-            Analytics
-          </a>
-          <a
-            className="flex items-center gap-3 px-4 py-4 text-gray-500 transition-colors duration-150 hover:bg-[#2A2A2B] hover:text-gray-200"
-            href="#"
-            onClick={(e) => e.preventDefault()}
-          >
-            <span className="material-symbols-outlined">settings</span>
-            Settings
-          </a>
-        </nav>
-
-        <div className="mt-auto space-y-4 px-2">
-          <button
-            type="button"
-            disabled
-            title="Coming soon"
-            className="w-full rounded-lg bg-gradient-to-br from-primary to-primary-container py-3 font-bold text-on-primary opacity-60 shadow-lg"
-          >
-            Stake YAB
-          </button>
-          <div className="space-y-1">
-            <a
-              className="flex items-center gap-2 text-xs text-gray-500 transition-colors hover:text-primary"
-              href="#"
-              onClick={(e) => e.preventDefault()}
-            >
-              <span className="material-symbols-outlined text-sm">description</span>
-              Documentation
-            </a>
-            <a
-              className="flex items-center gap-2 text-xs text-gray-500 transition-colors hover:text-primary"
-              href="#"
-              onClick={(e) => e.preventDefault()}
-            >
-              <span className="material-symbols-outlined text-sm">help</span>
-              Support
-            </a>
-          </div>
-        </div>
-      </aside>
-
-      <main className="min-h-screen pb-12 pt-24 md:ml-64">
+      <main className="min-h-screen pb-12 pt-24">
         <div className="mx-auto max-w-7xl px-4 md:px-8">{children}</div>
       </main>
 

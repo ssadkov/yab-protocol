@@ -54,6 +54,19 @@ export function formatBpsPercent(bps: bigint): string {
   return `${pct.toFixed(fracDigits)}%`;
 }
 
+/** Oracle / vault-scale USD per 1 BTC (fixed-point `raw`); display with exactly 2 fractional digits. */
+export function formatOracleUsdPerBtc(
+  raw: bigint,
+  oracleDecimals: number,
+): string {
+  const n = Number(raw) / 10 ** oracleDecimals;
+  if (!Number.isFinite(n)) return "—";
+  return n.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 /** `maxFrac` caps how many fractional digits we print (display only), not token decimals. */
 export function formatRaw(raw: bigint, decimals: number, maxFrac = 8): string {
   const neg = raw < 0n;

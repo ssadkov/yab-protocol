@@ -46,3 +46,6 @@ export const VAULT_STATE_TYPE = `${MODULE_ADDRESS}::vault::VaultState` as const;
 /** On-chain minimums (vault.move) */
 export const MIN_DEPOSIT_TOKEN_A = 20_000n;
 export const MIN_DEPOSIT_TOKEN_B_DUAL = 100n;
+
+/** Default `strategy::max_swap_slippage_bps` (internal swaps); matches `sources/strategy.move`. */
+export const STRATEGY_MAX_SWAP_SLIPPAGE_BPS = 30;

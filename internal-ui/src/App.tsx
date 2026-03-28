@@ -14,6 +14,7 @@ import {
   MIN_DEPOSIT_TOKEN_A,
   MIN_DEPOSIT_TOKEN_B_DUAL,
   MODULE_ADDRESS,
+  STRATEGY_MAX_SWAP_SLIPPAGE_BPS,
   TOKEN_A_SYMBOL,
   TOKEN_B_SYMBOL,
   VAULT_ADDRESS,
@@ -24,6 +25,7 @@ import {
 import {
   BTC_USD_ORACLE_DECIMALS,
   formatBpsPercent,
+  formatOracleUsdPerBtc,
   formatRaw,
   formatUsd,
   parseToRaw,
@@ -35,15 +37,12 @@ import { toEntryU64, transactionHashFromSubmit } from "./moveArgs";
 import { useHyperionVaultPosition } from "./useHyperionVaultPosition";
 import { useVaultData } from "./useVaultData";
 import { useWalletBalances } from "./useWalletBalances";
-import { btcRawToUsdcRaw } from "./vaultMath";
-
-function networkDisplayLabel(): string {
-  const n = (import.meta.env.VITE_NETWORK ?? "mainnet").toLowerCase();
-  if (n === "mainnet") return "Aptos Mainnet";
-  if (n === "testnet") return "Aptos Testnet";
-  if (n === "devnet") return "Aptos Devnet";
-  return `Aptos ${n}`;
-}
+import {
+  btcRawToUsdcRaw,
+  estimateYabMintRawFromBtcEquiv,
+  estimateYabMintRawFromTokenA,
+  usdcRawToBtcRawEquiv,
+} from "./vaultMath";
 
 export default function App() {
   const {
@@ -154,6 +153,92 @@ export default function App() {
       maximumFractionDigits: 8,
     })} ${TOKEN_A_SYMBOL} (spot)`;
   }, [data, navUsd]);
+
+  const slippageLabelUi = useMemo(() => {
+    const pct = STRATEGY_MAX_SWAP_SLIPPAGE_BPS / 100;
+    return `${pct.toFixed(2)}% (strategy max swap slippage; internal swaps)`;
+  }, []);
+
+  const minDepositHintDepositTab = useMemo(() => {
+    const minA = formatRaw(MIN_DEPOSIT_TOKEN_A, tokenADecimals, 8);
+    const minB = formatRaw(MIN_DEPOSIT_TOKEN_B_DUAL, tokenBDecimals, 8);
+    return `Minimum deposit: ${minA} ${TOKEN_A_SYMBOL} (single-asset ${TOKEN_A_SYMBOL}); ${minB} ${TOKEN_B_SYMBOL} (USDC-only and dual ${TOKEN_B_SYMBOL} leg).`;
+  }, [tokenADecimals, tokenBDecimals]);
+
+  const minDepositHintDualTab = useMemo(() => {
+    const minA = formatRaw(MIN_DEPOSIT_TOKEN_A, tokenADecimals, 8);
+    const minB = formatRaw(MIN_DEPOSIT_TOKEN_B_DUAL, tokenBDecimals, 8);
+    return `Minimum per leg: ${minA} ${TOKEN_A_SYMBOL} and ${minB} ${TOKEN_B_SYMBOL}.`;
+  }, [tokenADecimals, tokenBDecimals]);
+
+  const vaultExplorerUrl = useMemo(() => {
+    const net = (import.meta.env.VITE_NETWORK ?? "mainnet").toLowerCase();
+    return `https://explorer.aptoslabs.com/object/${encodeURIComponent(VAULT_ADDRESS_NORMALIZED)}?network=${net}`;
+  }, []);
+
+  const expectedDepositYab = useMemo(() => {
+    if (!data || data.yabPriceRaw <= 0n || !navUsd) return { yab: null as string | null, usd: null as string | null };
+    try {
+      if (depositAsset === "A") {
+        const raw = parseToRaw(depositA, tokenADecimals);
+        if (raw <= 0n) return { yab: null, usd: null };
+        const sh = estimateYabMintRawFromTokenA(raw, data.yabPriceRaw);
+        if (sh <= 0n) return { yab: null, usd: null };
+        const yab = `≈ ${formatRaw(sh, YAB_DECIMALS, 6)} ${YAB_SYMBOL}`;
+        const usd = formatUsd(
+          (Number(sh) / 10 ** YAB_DECIMALS) * navUsd.yabUsdPerFull,
+        );
+        return { yab, usd };
+      }
+      const rawB = parseToRaw(depositB, tokenBDecimals);
+      if (rawB <= 0n) return { yab: null, usd: null };
+      const btcEq = usdcRawToBtcRawEquiv(rawB, data.btcUsdPriceRaw);
+      const sh = estimateYabMintRawFromBtcEquiv(btcEq, data.yabPriceRaw);
+      if (sh <= 0n) return { yab: null, usd: null };
+      const yab = `≈ ${formatRaw(sh, YAB_DECIMALS, 6)} ${YAB_SYMBOL}`;
+      const usd = formatUsd(
+        (Number(sh) / 10 ** YAB_DECIMALS) * navUsd.yabUsdPerFull,
+      );
+      return { yab, usd };
+    } catch {
+      return { yab: null, usd: null };
+    }
+  }, [
+    data,
+    navUsd,
+    depositAsset,
+    depositA,
+    depositB,
+    tokenADecimals,
+    tokenBDecimals,
+  ]);
+
+  const expectedDualYab = useMemo(() => {
+    if (!data || data.yabPriceRaw <= 0n || !navUsd) return { yab: null as string | null, usd: null as string | null };
+    try {
+      const rawA = parseToRaw(depositDualA, tokenADecimals);
+      const rawB = parseToRaw(depositDualB, tokenBDecimals);
+      if (rawA <= 0n && rawB <= 0n) return { yab: null, usd: null };
+      const btcEq =
+        rawA + usdcRawToBtcRawEquiv(rawB, data.btcUsdPriceRaw);
+      const sh = estimateYabMintRawFromBtcEquiv(btcEq, data.yabPriceRaw);
+      if (sh <= 0n) return { yab: null, usd: null };
+      const yab = `≈ ${formatRaw(sh, YAB_DECIMALS, 6)} ${YAB_SYMBOL}`;
+      const usd = formatUsd(
+        (Number(sh) / 10 ** YAB_DECIMALS) * navUsd.yabUsdPerFull,
+      );
+      return { yab, usd };
+    } catch {
+      return { yab: null, usd: null };
+    }
+  }, [
+    data,
+    navUsd,
+    depositDualA,
+    depositDualB,
+    tokenADecimals,
+    tokenBDecimals,
+  ]);
 
   useEffect(() => {
     if (!connected) {
@@ -400,7 +485,7 @@ export default function App() {
     navUsd != null ? formatUsd(navUsd.yabUsdPerFull) : null;
   const btcUsdStr =
     data != null
-      ? formatRaw(data.btcUsdPriceRaw, BTC_USD_ORACLE_DECIMALS, 8)
+      ? `$${formatOracleUsdPerBtc(data.btcUsdPriceRaw, BTC_USD_ORACLE_DECIMALS)}`
       : null;
 
   const btcUsdFooter = useMemo(() => {
@@ -435,15 +520,6 @@ export default function App() {
               : walletYabSharePct.toFixed(2)
         }%`
       : null;
-  const balALabel =
-    balanceA != null
-      ? `${formatRaw(balanceA, tokenADecimals)} ${TOKEN_A_SYMBOL}`
-      : null;
-  const balBLabel =
-    balanceB != null
-      ? `${formatRaw(balanceB, tokenBDecimals)} ${TOKEN_B_SYMBOL}`
-      : null;
-
   const withdrawEstBtc =
     withdrawEstimateBtcRaw != null
       ? `≈ ${formatRaw(withdrawEstimateBtcRaw, tokenADecimals)} ${TOKEN_A_SYMBOL}`
@@ -455,7 +531,6 @@ export default function App() {
 
   return (
     <DashboardLayout
-      networkLabel={networkDisplayLabel()}
       connected={connected}
       accountAddress={account ? String(account.address) : undefined}
       wallets={wallets}
@@ -481,19 +556,16 @@ export default function App() {
         </div>
       </div>
 
-      {connected && (
-        <YourPosition
-          balanceALabel={balALabel}
-          balanceBLabel={balBLabel}
-          yabBalanceLabel={yabBalLabel}
-          yabUsdLabel={yabUsdLabel}
-          sharePctLabel={shareStr}
-          balErr={balErr}
-        />
-      )}
-
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:gap-8">
         <div className="space-y-8 lg:col-span-8">
+          {connected && (
+            <YourPosition
+              yabBalanceLabel={yabBalLabel}
+              yabUsdLabel={yabUsdLabel}
+              sharePctLabel={shareStr}
+              balErr={balErr}
+            />
+          )}
           <HeroStats
             loading={loading}
             error={error}
@@ -513,6 +585,7 @@ export default function App() {
 
           <GovernanceIdentity
             vaultAddress={VAULT_ADDRESS}
+            vaultExplorerUrl={vaultExplorerUrl}
             performanceFeeBpsLabel={perfBpsStr}
             performanceFeePercentLabel={perfPctStr}
           />
@@ -522,13 +595,24 @@ export default function App() {
               Reserves (on-chain)
             </p>
             {data && (
-              <p>
-                Position: {formatRaw(data.positionBtcRaw, tokenADecimals)}{" "}
-                {TOKEN_A_SYMBOL} + {formatRaw(data.positionUsdcRaw, tokenBDecimals)}{" "}
-                {TOKEN_B_SYMBOL} · Free: {formatRaw(data.freeBtcRaw, tokenADecimals)} +{" "}
-                {formatRaw(data.freeUsdcRaw, tokenBDecimals)} {TOKEN_B_SYMBOL}. Supply{" "}
-                {data.yabSupplyRaw.toString()} raw.
-              </p>
+              <div className="space-y-3">
+                <p>
+                  Position: {formatRaw(data.positionBtcRaw, tokenADecimals)}{" "}
+                  {TOKEN_A_SYMBOL} + {formatRaw(data.positionUsdcRaw, tokenBDecimals)}{" "}
+                  {TOKEN_B_SYMBOL}
+                </p>
+                <div className="border-t border-outline-variant/20 pt-3">
+                  <p>
+                    Free reserves: {formatRaw(data.freeBtcRaw, tokenADecimals)}{" "}
+                    {TOKEN_A_SYMBOL} + {formatRaw(data.freeUsdcRaw, tokenBDecimals)}{" "}
+                    {TOKEN_B_SYMBOL}
+                  </p>
+                </div>
+                <p>
+                  Total {YAB_SYMBOL} supply:{" "}
+                  {formatRaw(data.yabSupplyRaw, YAB_DECIMALS, 6)} {YAB_SYMBOL}
+                </p>
+              </div>
             )}
             {!data && !loading && <p>—</p>}
             {loading && !data && <p>Loading…</p>}
@@ -593,9 +677,13 @@ export default function App() {
               onSubmitWithdrawBtc={() => void submitWithdraw()}
               onSubmitWithdrawUsdc={() => void submitWithdrawUsdc()}
               exchangeRateHint={exchangeRateHint}
-              slippageLabel="—"
-              expectedOutputDeposit={null}
-              expectedUsdDeposit={null}
+              slippageLabel={slippageLabelUi}
+              expectedOutputDeposit={expectedDepositYab.yab}
+              expectedUsdDeposit={expectedDepositYab.usd ?? ""}
+              expectedOutputDual={expectedDualYab.yab}
+              expectedUsdDual={expectedDualYab.usd ?? ""}
+              minDepositHintDepositTab={minDepositHintDepositTab}
+              minDepositHintDualTab={minDepositHintDualTab}
               withdrawEstimateBtc={withdrawEstBtc}
               withdrawEstimateUsdc={withdrawEstUsdc}
             />
@@ -605,6 +693,24 @@ export default function App() {
                 {txMsg}
               </p>
             )}
+            <div className="mt-8 flex flex-col items-end gap-2 border-t border-outline-variant/20 pt-4 text-xs text-on-surface-variant">
+              <a
+                href="https://x.com/ssadkov"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="transition-colors hover:text-primary"
+              >
+                X (Twitter)
+              </a>
+              <a
+                href="https://t.me/ssadkov"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="transition-colors hover:text-primary"
+              >
+                Support (Telegram)
+              </a>
+            </div>
           </div>
         </aside>
       </div>
