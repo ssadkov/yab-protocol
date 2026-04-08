@@ -31,10 +31,10 @@ git = "https://github.com/aptos-labs/aptos-core.git"
 subdir = "aptos-move/framework/aptos-stdlib"
 rev = "2c74a456298fcd520241a562119b6fe30abdaae2"
 
-# Hyperion CLMM interface.
-# For local tests, use `dex-local` stubs to avoid requiring on-chain pool objects.
+# Hyperion CLMM interface — use git dependency for production builds/upgrades.
 [dependencies.dex]
-local = "./dex-local"
+git = "https://github.com/Hyperfluid/hyperfluid-interface.git"
+rev = "595fec8db8c9bd9aa7050f7342f316d48f722108"
 
 # Pyth price feeds (depends on Wormhole + Deployer — resolved transitively).
 [dependencies.Pyth]
@@ -43,3 +43,7 @@ subdir = "target_chains/aptos/contracts"
 rev = "main"
 
 [dev-dependencies]
+
+# Use local DEX stubs for unit tests (avoids requiring on-chain pool objects).
+[dev-dependencies.dex]
+local = "./dex-local"
