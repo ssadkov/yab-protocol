@@ -295,4 +295,68 @@ module yab::vault_e2e_tests {
         assert!(vault::e2e_free_btc(va) == 900, 3);
         assert!(vault::e2e_free_usdc(va) == 450, 4);
     }
+
+    #[test(creator_a = @0xCB01, creator_b = @0xCB02, admin = @0xAE01, user = @0xBE01, framework = @0x1)]
+    fun test_withdraw_payout_caps_token_a_leg_to_owed_and_keeps_excess_in_vault(
+        creator_a: &signer,
+        creator_b: &signer,
+        admin: &signer,
+        user: &signer,
+        framework: &signer,
+    ) {
+        let (ma, _mb, mint_a, _mint_b) = setup_two_tokens_and_vault(creator_a, creator_b, admin, framework);
+        let admin_addr = signer::address_of(admin);
+        let user_addr = signer::address_of(user);
+        account::create_account_for_test(user_addr);
+        let va = vault_object_address(admin_addr);
+
+        // Mint token A to the user so we can simulate "position leg returned token A".
+        let meta_a = object::address_to_object<Metadata>(ma);
+        let fa_leg = fungible_asset::mint(&mint_a, 100);
+        primary_fungible_store::deposit(user_addr, fa_leg);
+        let fa_leg2 = primary_fungible_store::withdraw(user, meta_a, 100);
+
+        // Owed is smaller than leg amount; excess must remain in vault free reserves.
+        let owed = 40u64;
+        let user_before = primary_fungible_store::balance(user_addr, meta_a);
+        let vault_before = primary_fungible_store::balance(va, meta_a);
+        vault::e2e_pay_btc_owed_from_token_a_leg_for_test(va, user_addr, owed, fa_leg2);
+        let user_after = primary_fungible_store::balance(user_addr, meta_a);
+        let vault_after = primary_fungible_store::balance(va, meta_a);
+
+        assert!(user_after - user_before == owed, 1);
+        assert!(vault_after - vault_before == 60, 2);
+        assert!(vault::e2e_free_btc(va) == 60, 3);
+    }
+
+    #[test(creator_a = @0xCB11, creator_b = @0xCB12, admin = @0xAE11, user = @0xBE11, framework = @0x1)]
+    fun test_withdraw_usdc_payout_caps_token_b_leg_to_owed_and_keeps_excess_in_vault(
+        creator_a: &signer,
+        creator_b: &signer,
+        admin: &signer,
+        user: &signer,
+        framework: &signer,
+    ) {
+        let (_ma, mb, _mint_a, mint_b) = setup_two_tokens_and_vault(creator_a, creator_b, admin, framework);
+        let admin_addr = signer::address_of(admin);
+        let user_addr = signer::address_of(user);
+        account::create_account_for_test(user_addr);
+        let va = vault_object_address(admin_addr);
+
+        let meta_b = object::address_to_object<Metadata>(mb);
+        let fa_leg = fungible_asset::mint(&mint_b, 100);
+        primary_fungible_store::deposit(user_addr, fa_leg);
+        let fa_leg2 = primary_fungible_store::withdraw(user, meta_b, 100);
+
+        let owed = 40u64;
+        let user_before = primary_fungible_store::balance(user_addr, meta_b);
+        let vault_before = primary_fungible_store::balance(va, meta_b);
+        vault::e2e_pay_usdc_owed_from_token_b_leg_for_test(va, user_addr, owed, fa_leg2);
+        let user_after = primary_fungible_store::balance(user_addr, meta_b);
+        let vault_after = primary_fungible_store::balance(va, meta_b);
+
+        assert!(user_after - user_before == owed, 1);
+        assert!(vault_after - vault_before == 60, 2);
+        assert!(vault::e2e_free_usdc(va) == 60, 3);
+    }
 }
