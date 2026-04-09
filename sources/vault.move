@@ -1374,7 +1374,10 @@ module yab::vault {
         if (need_after_free > 0) {
             let pos_obj = object::address_to_object<position_v3::Info>(pos_addr);
             let pos_liq = position_v3::get_liquidity(pos_obj);
-            let pos_equiv = position_btc_equiv(state, btc_price);
+            // Live CLMM composition: `state.position_*` are accounting snapshots and drift as price moves.
+            // Use Hyperion's live quote helper to size liquidity removal.
+            let (pos_a_live, pos_b_live) = router_v3::get_amount_by_liquidity(pos_obj);
+            let pos_equiv = pos_a_live + usdc_raw_to_btc_raw_equiv(pos_b_live, btc_price);
             assert!(pos_equiv > 0, errors::zero_supply());
             let liq_rm = {
                 let x = (pos_liq * (need_after_free as u128)) / ((pos_equiv as u128) + 1);
@@ -1647,19 +1650,27 @@ module yab::vault {
         // 3) If still owed, remove liquidity from position and realize remaining USDC. Any excess stays in vault.
         let remaining_usdc = if (remaining_usdc > 0) {
             let pos_obj = object::address_to_object<position_v3::Info>(pos_addr);
-            let pos_liq = position_v3::get_liquidity(pos_obj);
-            let pos_equiv = position_btc_equiv(state, btc_price);
-            assert!(pos_equiv > 0, errors::zero_supply());
-            let need_btc_equiv = usdc_raw_to_btc_raw_equiv(remaining_usdc, btc_price);
-            let liq_rm = {
-                let x = (pos_liq * (need_btc_equiv as u128)) / ((pos_equiv as u128) + 1);
-                if (x > pos_liq) {
-                    pos_liq
-                } else {
-                    x
-                }
-            };
-            if (liq_rm > 0) {
+            let remaining_usdc = remaining_usdc;
+            let attempts = 0u64;
+            while (remaining_usdc > 0 && attempts < 3) {
+                attempts = attempts + 1;
+                let pos_liq = position_v3::get_liquidity(pos_obj);
+                if (pos_liq == 0) {
+                    break
+                };
+
+                // Live CLMM composition: `state.position_*` are accounting snapshots and drift as price moves.
+                // Use Hyperion's live quote helper to size liquidity removal.
+                let (pos_a_live, pos_b_live) = router_v3::get_amount_by_liquidity(pos_obj);
+                let pos_equiv = pos_a_live + usdc_raw_to_btc_raw_equiv(pos_b_live, btc_price);
+                assert!(pos_equiv > 0, errors::zero_supply());
+                let need_btc_equiv = usdc_raw_to_btc_raw_equiv(remaining_usdc, btc_price);
+                let liq_rm = {
+                    let x = (pos_liq * (need_btc_equiv as u128)) / ((pos_equiv as u128) + 1);
+                    let x = if (x == 0) { 1u128 } else { x };
+                    if (x > pos_liq) { pos_liq } else { x }
+                };
+
                 let deadline = timestamp::now_seconds() + DEADLINE_SECS;
                 let (opt_a, opt_b) = router_v3::remove_liquidity_by_contract(
                     &vault_signer,
@@ -1669,6 +1680,7 @@ module yab::vault {
                     0,
                     deadline,
                 );
+
                 let remaining_usdc = if (option::is_some(&opt_b)) {
                     let fa_b = option::destroy_some(opt_b);
                     let b_amt = fungible_asset::amount(&fa_b);
@@ -1696,8 +1708,11 @@ module yab::vault {
                     let btc_needed_equiv2 = usdc_raw_to_btc_raw_equiv(remaining_usdc, btc_price);
                     let want_swap_a2 = btc_needed_equiv2 + 2;
                     let swap_a2 = if (a_amt >= want_swap_a2) { want_swap_a2 } else { a_amt };
-
-                    let fa_swap = if (swap_a2 > 0) { fungible_asset::extract(&mut fa_a, swap_a2) } else { fungible_asset::zero(meta_a) };
+                    let fa_swap = if (swap_a2 > 0) {
+                        fungible_asset::extract(&mut fa_a, swap_a2)
+                    } else {
+                        fungible_asset::zero(meta_a)
+                    };
 
                     // Any non-swapped BTC stays in vault as free reserve.
                     let leftover_a_pre = fungible_asset::amount(&fa_a);
@@ -1763,10 +1778,12 @@ module yab::vault {
                     };
                     remaining_usdc
                 };
-                remaining_usdc
-            } else {
-                remaining_usdc
-            }
+
+                if (remaining_usdc == 0) {
+                    break
+                };
+            };
+            remaining_usdc
         } else {
             remaining_usdc
         };

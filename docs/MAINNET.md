@@ -56,6 +56,23 @@
 
 ---
 
+## Successful package upgrade (compatible publish) — withdraw payout caps
+
+| Field | Value |
+|--------|--------|
+| Version | `4811996211` |
+| Hash | `0x5c4833d1fbf7c628859a7d35afa216294c961d0306569159c9982d520fe2647b` |
+| Network | Mainnet |
+| VM status | `Executed successfully` |
+| Gas used | 15481 units |
+| Gas unit price | 100 |
+
+**Explorer:** [transaction on Aptos Explorer](https://explorer.aptoslabs.com/txn/0x5c4833d1fbf7c628859a7d35afa216294c961d0306569159c9982d520fe2647b?network=mainnet)
+
+**Notes:** This upgrade hardens `withdraw` and `withdraw_usdc` against overpayment by capping user payouts to the owed amount and returning any excess swap/remove-liquidity outputs back to the vault reserves.
+
+---
+
 ## Action plan (next steps)
 
 1. **USDC deposit path** — implement and/or validate user flow for depositing **USDC** (token B) into the vault, not only WBTC (token A). Includes UI/SDK and on-chain `deposit_dual` or equivalent if that is the intended entrypoint.
