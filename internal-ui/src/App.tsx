@@ -37,6 +37,44 @@ import { toEntryU64, transactionHashFromSubmit } from "./moveArgs";
 import { useHyperionVaultPosition } from "./useHyperionVaultPosition";
 import { useVaultData } from "./useVaultData";
 import { useWalletBalances } from "./useWalletBalances";
+
+const PYTH_HERMES_URL = "https://hermes.pyth.network";
+// BTC/USD Pyth price feed id (bytes32) for Hermes.
+const PYTH_BTC_USD_FEED_ID =
+  "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43";
+
+function hexToBytes(hex: string): Uint8Array {
+  const s = hex.trim().toLowerCase().replace(/^0x/, "");
+  if (s.length % 2 !== 0) {
+    throw new Error("Invalid hex: odd length");
+  }
+  const out = new Uint8Array(s.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    const byte = s.slice(i * 2, i * 2 + 2);
+    out[i] = Number.parseInt(byte, 16);
+  }
+  return out;
+}
+
+async function fetchPythUpdateData(): Promise<Uint8Array[]> {
+  const url = new URL("/v2/updates/price/latest", PYTH_HERMES_URL);
+  url.searchParams.append("ids[]", PYTH_BTC_USD_FEED_ID);
+  const res = await fetch(url.toString(), {
+    headers: { accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`Hermes error: HTTP ${res.status}`);
+  }
+  const j = (await res.json()) as {
+    binary?: { encoding?: string; data?: string[] };
+  };
+  const data = j.binary?.data;
+  if (!data || data.length === 0) {
+    throw new Error("Hermes error: empty update data");
+  }
+  const hex = data[0].startsWith("0x") ? data[0] : `0x${data[0]}`;
+  return [hexToBytes(hex)];
+}
 import {
   btcRawToUsdcRaw,
   estimateYabMintRawFromBtcEquiv,
@@ -301,10 +339,15 @@ export default function App() {
         setTxMsg("Amount too large for chain (u64)");
         return;
       }
+      const pythUpdateData = await fetchPythUpdateData();
       const pending = await signAndSubmitTransaction({
         data: {
-          function: `${MODULE_ADDRESS}::vault::withdraw`,
-          functionArguments: [VAULT_ADDRESS_NORMALIZED, toEntryU64(raw)],
+          function: `${MODULE_ADDRESS}::vault::withdraw_with_pyth_update`,
+          functionArguments: [
+            VAULT_ADDRESS_NORMALIZED,
+            toEntryU64(raw),
+            pythUpdateData,
+          ],
         },
       });
       const txHash = transactionHashFromSubmit(pending);
@@ -353,10 +396,15 @@ export default function App() {
         setTxMsg("Amount too large for chain (u64)");
         return;
       }
+      const pythUpdateData = await fetchPythUpdateData();
       const pending = await signAndSubmitTransaction({
         data: {
-          function: `${MODULE_ADDRESS}::vault::withdraw_usdc`,
-          functionArguments: [VAULT_ADDRESS_NORMALIZED, toEntryU64(raw)],
+          function: `${MODULE_ADDRESS}::vault::withdraw_usdc_with_pyth_update`,
+          functionArguments: [
+            VAULT_ADDRESS_NORMALIZED,
+            toEntryU64(raw),
+            pythUpdateData,
+          ],
         },
       });
       const txHash = transactionHashFromSubmit(pending);
