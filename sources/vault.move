@@ -1388,6 +1388,7 @@ module yab::vault {
                 }
             };
             if (liq_rm > 0) {
+                let removed_all = (liq_rm == pos_liq);
                 let deadline = timestamp::now_seconds() + DEADLINE_SECS;
                 let (opt_a, opt_b) = router_v3::remove_liquidity_by_contract(
                     &vault_signer,
@@ -1453,6 +1454,14 @@ module yab::vault {
                     );
                 } else {
                     option::destroy_none(opt_b);
+                };
+
+                // If we removed all remaining liquidity, the position object may be deleted by the DEX.
+                // Clear the pointer so subsequent reads/withdraws don't reference a non-existent object.
+                if (removed_all) {
+                    state.position_address = @0x0;
+                    state.position_btc = 0;
+                    state.position_usdc = 0;
                 };
             };
         };
