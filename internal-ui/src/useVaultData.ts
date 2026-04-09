@@ -44,6 +44,8 @@ export type VaultSnapshot = {
   lastRebalanceTs: bigint;
   /** Bps of each token leg sent to treasury on harvest (`claim_rewards` / rebalance fee claim); not charged on withdraw */
   performanceFeeBps: bigint;
+  /** Hyperion pool fee tier (u8 on-chain). */
+  feeTier: number;
   /** True when `btc_usd_price_safe` returned (Pyth + vault guards); false when falling back to `last_recorded_price`. */
   btcUsdFromSafeOracleView: boolean;
   /** `age` field from `btc_usd_snapshot_unsafe` (seconds since Pyth publish); null if view fails. */
@@ -89,6 +91,7 @@ export function useVaultData(pollMs = 15_000) {
       const freeA = toBig(d.free_btc);
       const freeB = toBig(d.free_usdc);
       const lastRec = toBig(d.last_recorded_price);
+      const feeTier = Number(toBig(d.fee_tier ?? 0));
 
       let btcUsd = lastRec;
       let btcUsdFromSafeOracleView = false;
@@ -153,6 +156,7 @@ export function useVaultData(pollMs = 15_000) {
         lastRecordedPrice: lastRec,
         lastRebalanceTs: toBig(d.last_rebalance_ts),
         performanceFeeBps: toBig(d.performance_fee_bps),
+        feeTier,
         btcUsdFromSafeOracleView,
         pythPublishAgeSecs,
       });

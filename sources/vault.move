@@ -2114,6 +2114,250 @@ module yab::vault {
         });
     }
 
+    /// Operator: recovery rebalance.
+    ///
+    /// If `state.position_address` points to a deleted DEX position object (e.g. after full liquidity removal),
+    /// this entrypoint will:
+    /// - clear the missing position pointer,
+    /// - rebalance the vault's *current* free A/B inventory toward the strategy ratio,
+    /// - open a fresh CLMM position in the provided tick range.
+    ///
+    /// When `force=false`, this enforces the same `should_rebalance` + `min_rebalance_interval_secs` gates as `rebalance`.
+    public entry fun recover_rebalance(
+        operator: &signer,
+        vault_addr: address,
+        tick_lower: u32,
+        tick_upper: u32,
+        force: bool,
+    ) acquires VaultState, VaultStrategy {
+        assert!(tick_lower < tick_upper, errors::invalid_pool_config());
+        let op = signer::address_of(operator);
+
+        let (min_interval, slip_bps, half_bps) = {
+            let st = borrow_global<VaultStrategy>(vault_addr);
+            (
+                strat::min_rebalance_interval_secs(&st.params),
+                strat::max_swap_slippage_bps(&st.params),
+                strat::range_half_width_bps(&st.params),
+            )
+        };
+
+        let btc_price = {
+            let s = borrow_global<VaultState>(vault_addr);
+            assert!(op == s.operator || op == s.admin, errors::not_operator());
+            oracle::get_safe_price(s.last_recorded_price)
+        };
+
+        let old_center = { let s = borrow_global<VaultState>(vault_addr); s.center_price };
+        let now = timestamp::now_seconds();
+
+        let state = borrow_global_mut<VaultState>(vault_addr);
+
+        if (!force) {
+            let should_rb = strat::should_rebalance(btc_price, state.center_price, &borrow_global<VaultStrategy>(vault_addr).params);
+            assert!(should_rb, errors::rebalance_not_needed());
+            assert!(
+                now >= state.last_rebalance_ts + min_interval,
+                errors::rebalance_too_early(),
+            );
+        };
+
+        state.last_recorded_price = btc_price;
+
+        let vault_signer = object::generate_signer_for_extending(&state.extend_ref);
+        let meta_a = object::address_to_object<Metadata>(state.token_a_metadata);
+        let meta_b = object::address_to_object<Metadata>(state.token_b_metadata);
+        let fee_tier_val = state.fee_tier;
+        let pool = pool_v3::liquidity_pool(meta_a, meta_b, fee_tier_val);
+
+        // ── Step 1: If old position exists, exit it (like `rebalance`). Otherwise clear pointer.
+        let pos_addr = state.position_address;
+        let (opt_a, opt_b) = if (pos_addr != @0x0 && object::object_exists<position_v3::Info>(pos_addr)) {
+            let pos = object::address_to_object<position_v3::Info>(pos_addr);
+
+            let free_btc_before = state.free_btc;
+            let free_usdc_before = state.free_usdc;
+
+            let (fee_a, fee_b) = pool_v3::claim_fees(&vault_signer, pos);
+            state.free_btc = state.free_btc + fungible_asset::amount(&fee_a);
+            state.free_usdc = state.free_usdc + fungible_asset::amount(&fee_b);
+            primary_fungible_store::deposit(vault_addr, fee_a);
+            primary_fungible_store::deposit(vault_addr, fee_b);
+
+            let rewards = pool_v3::claim_rewards(&vault_signer, pos);
+            process_reward_assets(rewards, pool, meta_a, meta_b, slip_bps, vault_addr, state);
+
+            take_harvest_protocol_cut(
+                &vault_signer,
+                vault_addr,
+                state.treasury,
+                state.performance_fee_bps,
+                meta_a,
+                meta_b,
+                free_btc_before,
+                free_usdc_before,
+                state,
+            );
+
+            state.position_btc = 0;
+            state.position_usdc = 0;
+
+            let pos_liq = position_v3::get_liquidity(pos);
+            assert!(pos_liq > 0, errors::zero_supply());
+            let deadline_rm = timestamp::now_seconds() + DEADLINE_SECS;
+            router_v3::remove_liquidity_by_contract(
+                &vault_signer,
+                pos,
+                pos_liq,
+                0,
+                0,
+                deadline_rm,
+            )
+        } else {
+            // Missing / deleted position object — treat as no position and clear pointer + accounting snapshot.
+            state.position_address = @0x0;
+            state.position_btc = 0;
+            state.position_usdc = 0;
+            (option::none<FungibleAsset>(), option::none<FungibleAsset>())
+        };
+
+        // ── Step 2: Withdraw free balances into in-memory assets and merge with removed liquidity (if any).
+        let fa_a_total = if (state.free_btc > 0) {
+            let fa = primary_fungible_store::withdraw(&vault_signer, meta_a, state.free_btc);
+            state.free_btc = 0;
+            fa
+        } else {
+            fungible_asset::zero(meta_a)
+        };
+
+        let fa_b_total = if (state.free_usdc > 0) {
+            let fa = primary_fungible_store::withdraw(&vault_signer, meta_b, state.free_usdc);
+            state.free_usdc = 0;
+            fa
+        } else {
+            fungible_asset::zero(meta_b)
+        };
+
+        let fa_a_merged = merge_opt_fa(fa_a_total, opt_a);
+        let fa_b_merged = merge_opt_fa(fa_b_total, opt_b);
+
+        // ── Step 3: Compute target ratio from current pool sqrt price band.
+        let pool_obj_addr = object::object_address(&pool);
+        let (_, sqrt_from_pool) = pool_v3::current_tick_and_price(pool_obj_addr);
+        let sqrt_current = if (sqrt_from_pool > 0) {
+            sqrt_from_pool
+        } else {
+            math::price_to_sqrt_q64(btc_price)
+        };
+        let (sqrt_price_low, sqrt_price_high) = math::sqrt_bps_band_around_current(sqrt_current, half_bps);
+        let btc_ratio = math::btc_ratio_bps(sqrt_current, sqrt_price_low, sqrt_price_high);
+
+        // ── Step 4: Rebalance inventory symmetrically (A→B or B→A) before adding liquidity.
+        let fa_a_total = fa_a_merged;
+        let fa_b_total = fa_b_merged;
+
+        let cur_a = fungible_asset::amount(&fa_a_total);
+        let cur_b = fungible_asset::amount(&fa_b_total);
+        let total_equiv_a = cur_a + usdc_raw_to_btc_raw_equiv(cur_b, btc_price);
+        let desired_a = (total_equiv_a as u128) * (btc_ratio as u128) / 10000;
+        let desired_a = desired_a as u64;
+
+        if (cur_a > desired_a) {
+            let swap_a = cur_a - desired_a;
+            if (swap_a > 0) {
+                let fa_swap = fungible_asset::extract(&mut fa_a_total, swap_a);
+                let limit = swap_sqrt_price_limit(pool, true);
+                let (_amt_out, fa_in_remain, fa_b_from_swap) = pool_v3::swap(
+                    pool,
+                    true,
+                    true,
+                    swap_a,
+                    fa_swap,
+                    limit,
+                );
+                fungible_asset::merge(&mut fa_a_total, fa_in_remain);
+                fungible_asset::merge(&mut fa_b_total, fa_b_from_swap);
+            };
+        } else {
+            let deficit_a = desired_a - cur_a;
+            if (deficit_a > 0) {
+                let swap_b = btc_raw_to_usdc_raw(deficit_a, btc_price);
+                let avail_b = fungible_asset::amount(&fa_b_total);
+                let swap_b = if (swap_b > avail_b) { avail_b } else { swap_b };
+                if (swap_b > 0) {
+                    let fa_swap_b = fungible_asset::extract(&mut fa_b_total, swap_b);
+                    let limit = swap_sqrt_price_limit(pool, false);
+                    let (_o0, fa_mid, fa_a_out) = pool_v3::swap(
+                        pool,
+                        false,
+                        true,
+                        swap_b,
+                        fa_swap_b,
+                        limit,
+                    );
+                    // Return any mid back to vault (same as reward processing pattern).
+                    if (fungible_asset::amount(&fa_mid) > 0) {
+                        primary_fungible_store::deposit(vault_addr, fa_mid);
+                    } else {
+                        fungible_asset::destroy_zero(fa_mid);
+                    };
+                    fungible_asset::merge(&mut fa_a_total, fa_a_out);
+                };
+            };
+        };
+
+        let fa_a_for_lp = fa_a_total;
+        let fa_b_for_lp = fa_b_total;
+
+        // ── Step 5: Open a fresh position and add liquidity.
+        let position = pool_v3::open_position(
+            &vault_signer,
+            meta_a,
+            meta_b,
+            fee_tier_val,
+            tick_lower,
+            tick_upper,
+        );
+
+        let amount_a_desired = fungible_asset::amount(&fa_a_for_lp);
+        let amount_b_desired = fungible_asset::amount(&fa_b_for_lp);
+        // Recovery path: allow LP add to proceed even when CLMM rounding would violate slip-based mins.
+        // The swap itself uses wide sqrt limits; safety comes from oracle gating + operator control.
+        let min_a = 0u64;
+        let min_b = 0u64;
+        let deadline = timestamp::now_seconds() + DEADLINE_SECS;
+
+        let (used_a, used_b, leftover_a, leftover_b) = router_v3::add_liquidity_by_contract(
+            &vault_signer,
+            position,
+            amount_a_desired,
+            amount_b_desired,
+            min_a,
+            min_b,
+            fa_a_for_lp,
+            fa_b_for_lp,
+            deadline,
+        );
+
+        let new_pos_addr = object::object_address(&position);
+        state.position_address = new_pos_addr;
+        state.position_btc = used_a;
+        state.position_usdc = used_b;
+        state.free_btc = fungible_asset::amount(&leftover_a);
+        state.free_usdc = fungible_asset::amount(&leftover_b);
+        state.center_price = btc_price;
+        state.last_rebalance_ts = now;
+
+        primary_fungible_store::deposit(vault_addr, leftover_a);
+        primary_fungible_store::deposit(vault_addr, leftover_b);
+
+        event::emit(Rebalanced {
+            old_center,
+            new_center: btc_price,
+            timestamp: now,
+        });
+    }
+
     // ── Governance ─────────────────────────────────────────────────────────────
 
     public entry fun set_operator(

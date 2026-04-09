@@ -1,6 +1,9 @@
 import type { HyperionPositionEntry } from "../useHyperionVaultPosition";
 import { feeTokenLabel } from "../useHyperionVaultPosition";
 import { shortAddress } from "../addresses";
+import { useVaultData } from "../useVaultData";
+import { useHyperionViaApiComputed } from "../useHyperionViaApiPool";
+import { TOKEN_A_SYMBOL, TOKEN_B_SYMBOL } from "../config";
 
 function sumUnclaimedUsd(
   entries: { amountUSD: string }[] | undefined,
@@ -34,6 +37,14 @@ export function StrategyCard({
 }: StrategyCardProps) {
   const hp = positions[0];
   const pool = hp?.position.pool;
+  const { data: vault } = useVaultData(60_000);
+  const via = useHyperionViaApiComputed(
+    vault?.tokenAMetadata ?? null,
+    vault?.tokenBMetadata ?? null,
+    vault?.tokenADecimals ?? null,
+    vault?.tokenBDecimals ?? null,
+    [500, 1000],
+  );
 
   const unclaimedFeesUsd = hp
     ? sumUnclaimedUsd(hp.fees?.unclaimed) +
@@ -57,6 +68,11 @@ export function StrategyCard({
   const objUrl = hp
     ? `https://explorer.aptoslabs.com/object/${encodeURIComponent(hp.position.objectId)}?network=${explorerNet}`
     : "";
+
+  const symA = pool?.token1Info.symbol ?? TOKEN_A_SYMBOL;
+  const symB = pool?.token2Info.symbol ?? TOKEN_B_SYMBOL;
+  const isUsdLike = symB.toUpperCase() === "USDC" || symB.toUpperCase() === "USD";
+  const usdPrefix = isUsdLike ? "$" : "";
 
   return (
     <div className="mb-8 rounded-xl border-l-4 border-primary bg-surface-container-low p-6 shadow-lg md:p-8">
@@ -128,7 +144,50 @@ export function StrategyCard({
 
       {!loading && !error && positions.length === 0 && (
         <p className="mb-6 text-sm text-on-surface-variant">
-          No positions returned for this vault address. Check indexer / proxy.
+          No positions returned for this vault address.
+          {via.data ? (
+            <>
+              {" "}
+              Pool tick: <span className="font-mono">{via.data.pool.currentTick}</span>. Price:{" "}
+              <span className="font-mono">
+                1 {symA} = {usdPrefix}
+                {via.data.priceBPerA} {symB}
+              </span>
+              .{" "}
+              <span className="mt-2 block text-[11px] leading-snug text-on-surface-variant/80">
+                {via.data.bands.map((b) => (
+                  <span key={b.halfWidthBps} className="block">
+                    <span className="font-mono">
+                      {b.label} price: {usdPrefix}
+                      {b.priceLowBPerA}…{usdPrefix}
+                      {b.priceHighBPerA} {symB}
+                    </span>{" "}
+                    <span className="font-mono text-on-surface-variant/70">
+                      · ticks: {b.tickLower}…{b.tickUpper}
+                    </span>
+                  </span>
+                ))}
+              </span>
+            </>
+          ) : (
+            <>
+              {" "}
+              <span className="text-on-surface-variant/80">
+                {via.loading ? "Loading Hyperion pool data…" : ""}
+              </span>
+              {via.error ? (
+                <span className="block text-[11px] leading-snug text-error/90">
+                  Hyperion via API failed: {via.error}
+                </span>
+              ) : (
+                " Check indexer / proxy."
+              )}
+              <span className="mt-2 block text-[10px] leading-snug text-on-surface-variant/60">
+                Debug: tokenA={vault?.tokenAMetadata ?? "null"}, tokenB=
+                {vault?.tokenBMetadata ?? "null"}
+              </span>
+            </>
+          )}
         </p>
       )}
 
