@@ -88,6 +88,23 @@
 
 **Notes:** This upgrade fixes a state update bug in the `withdraw_usdc_impl` retry loop where `remaining_usdc` was shadowed by `let` bindings inside the loop body, potentially causing false `E_WITHDRAW_INSUFFICIENT_LIQUIDITY` aborts after partial payouts.
 
+---
+
+## Successful package upgrade (compatible publish) — progressive USDC withdraw liquidity escalation
+
+| Field | Value |
+|--------|--------|
+| Version | `4817343622` |
+| Hash | `0x069c305bf0fbd1fc6ccfd2210b2dfc167b9a439ea28f761c75956ac1aeee3036` |
+| Network | Mainnet |
+| VM status | `Executed successfully` |
+| Gas used | 2908 units |
+| Gas unit price | 100 |
+
+**Explorer:** [transaction on Aptos Explorer](https://explorer.aptoslabs.com/txn/0x069c305bf0fbd1fc6ccfd2210b2dfc167b9a439ea28f761c75956ac1aeee3036?network=mainnet)
+
+**Notes:** This upgrade adds a progressive fail-safe for `withdraw_usdc_impl` retries: it escalates removed liquidity size (base → 2x → full position) to avoid false `E_WITHDRAW_INSUFFICIENT_LIQUIDITY` aborts caused by CLMM rounding / under-removal when converting position value into USDC.
+
 ## Action plan (next steps)
 
 1. **USDC deposit path** — implement and/or validate user flow for depositing **USDC** (token B) into the vault, not only WBTC (token A). Includes UI/SDK and on-chain `deposit_dual` or equivalent if that is the intended entrypoint.
