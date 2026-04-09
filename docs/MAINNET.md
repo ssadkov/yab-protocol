@@ -73,6 +73,21 @@
 
 ---
 
+## Successful package upgrade (compatible publish) — fix USDC withdraw retry loop
+
+| Field | Value |
+|--------|--------|
+| Version | `4817085913` |
+| Hash | `0x1673d53b714a2467100c52ca479e756db84be4d8e2cbc18e6a3faa1d7ed80f94` |
+| Network | Mainnet |
+| VM status | `Executed successfully` |
+| Gas used | 1560 units |
+| Gas unit price | 100 |
+
+**Explorer:** [transaction on Aptos Explorer](https://explorer.aptoslabs.com/txn/0x1673d53b714a2467100c52ca479e756db84be4d8e2cbc18e6a3faa1d7ed80f94?network=mainnet)
+
+**Notes:** This upgrade fixes a state update bug in the `withdraw_usdc_impl` retry loop where `remaining_usdc` was shadowed by `let` bindings inside the loop body, potentially causing false `E_WITHDRAW_INSUFFICIENT_LIQUIDITY` aborts after partial payouts.
+
 ## Action plan (next steps)
 
 1. **USDC deposit path** — implement and/or validate user flow for depositing **USDC** (token B) into the vault, not only WBTC (token A). Includes UI/SDK and on-chain `deposit_dual` or equivalent if that is the intended entrypoint.
