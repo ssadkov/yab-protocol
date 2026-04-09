@@ -1681,7 +1681,7 @@ module yab::vault {
                     deadline,
                 );
 
-                let remaining_usdc = if (option::is_some(&opt_b)) {
+                remaining_usdc = if (option::is_some(&opt_b)) {
                     let fa_b = option::destroy_some(opt_b);
                     let b_amt = fungible_asset::amount(&fa_b);
                     if (state.position_usdc >= b_amt) {
@@ -1695,7 +1695,7 @@ module yab::vault {
                     remaining_usdc
                 };
 
-                let remaining_usdc = if (remaining_usdc > 0 && option::is_some(&opt_a)) {
+                remaining_usdc = if (remaining_usdc > 0 && option::is_some(&opt_a)) {
                     let fa_a = option::destroy_some(opt_a);
                     let a_amt = fungible_asset::amount(&fa_a);
                     if (state.position_btc >= a_amt) {
