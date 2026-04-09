@@ -1,16 +1,10 @@
 import type { HyperionPositionEntry } from "../useHyperionVaultPosition";
-import { feeTokenLabel } from "../useHyperionVaultPosition";
+import { feeTokenLabel, unclaimedFeesFarmUsd } from "../useHyperionVaultPosition";
 import { shortAddress } from "../addresses";
 import { useVaultData } from "../useVaultData";
 import { useHyperionViaApiComputed } from "../useHyperionViaApiPool";
 import { TOKEN_A_SYMBOL, TOKEN_B_SYMBOL } from "../config";
-
-function sumUnclaimedUsd(
-  entries: { amountUSD: string }[] | undefined,
-): number {
-  if (!entries?.length) return 0;
-  return entries.reduce((acc, e) => acc + Number(e.amountUSD || 0), 0);
-}
+import { useCampaignRewards } from "../useCampaignRewards";
 
 /** Position of current tick on [tickLower, tickUpper]; can be outside 0–1. */
 function tickMarkerFraction(
@@ -45,11 +39,13 @@ export function StrategyCard({
     vault?.tokenBDecimals ?? null,
     [500, 1000],
   );
+  const campaign = useCampaignRewards(
+    vault?.tokenAMetadata ?? null,
+    vault?.tokenBMetadata ?? null,
+    vault?.feeTier ?? null,
+  );
 
-  const unclaimedFeesUsd = hp
-    ? sumUnclaimedUsd(hp.fees?.unclaimed) +
-      sumUnclaimedUsd(hp.farm?.unclaimed)
-    : 0;
+  const unclaimedFeesUsd = unclaimedFeesFarmUsd(hp);
 
   const tickLower = hp?.position.tickLower ?? 0;
   const tickUpper = hp?.position.tickUpper ?? 1;
@@ -126,6 +122,31 @@ export function StrategyCard({
                   })}`
                 : "—"}
           </p>
+          <div className="mt-4 border-t border-outline-variant/20 pt-3">
+            <p className="mb-1 text-xs uppercase tracking-widest text-on-surface-variant">
+              Campaign rewards (on-chain)
+            </p>
+            <p className="mb-1 text-[10px] leading-snug text-on-surface-variant/60">
+              Unclaimable — Hyperion campaign module only exposes <code className="font-mono">entry</code> claims;
+              rewards accrue to the vault object, not the operator wallet.
+            </p>
+            {campaign.loading ? (
+              <p className="font-mono text-sm text-on-surface-variant">…</p>
+            ) : campaign.error ? (
+              <p className="text-[11px] leading-snug text-error/90">{campaign.error}</p>
+            ) : campaign.data && campaign.data.rows.length > 0 ? (
+              <ul className="space-y-1 font-mono text-xs text-on-surface-variant">
+                {campaign.data.rows.map((r) => (
+                  <li key={r.tokenMetadata}>
+                    <span className="text-secondary">{r.displayAmount}</span> {r.tokenLabel}{" "}
+                    <span className="text-on-surface-variant/50">accrued · unclaimable</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="font-mono text-sm text-on-surface-variant/70">None</p>
+            )}
+          </div>
         </div>
       </div>
 

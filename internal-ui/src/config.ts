@@ -49,3 +49,15 @@ export const MIN_DEPOSIT_TOKEN_B_DUAL = 100n;
 
 /** Default `strategy::max_swap_slippage_bps` (internal swaps); matches `sources/strategy.move`. */
 export const STRATEGY_MAX_SWAP_SLIPPAGE_BPS = 30;
+
+/** Hyperion DEX package (pool_v3); matches `Move.toml` `[addresses].dex_contract`. */
+export const DEX_CONTRACT_ADDRESS = (
+  import.meta.env.VITE_DEX_CONTRACT_ADDRESS ??
+  "0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c"
+).trim();
+
+/** Separate campaign / pool reward contract (not vault module). */
+export const CAMPAIGN_REWARD_MODULE_ADDRESS = (
+  import.meta.env.VITE_CAMPAIGN_REWARD_MODULE_ADDRESS ??
+  "0xbefca24468c1cce695166e97c90adbd9fc07e4889e6dd1c647bed4bc237e1736"
+).trim();

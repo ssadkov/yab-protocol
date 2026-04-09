@@ -15,6 +15,10 @@ interface ImportMetaEnv {
   readonly VITE_HYPERION_USE_PROXY: string;
   /** Proxy target for dev (default `https://yieldai.app`). */
   readonly VITE_HYPERION_PROXY_TARGET: string;
+  /** Optional: Hyperion `dex_contract` package address for `pool_v3` views. */
+  readonly VITE_DEX_CONTRACT_ADDRESS: string;
+  /** Optional: `reward` module package for campaign claimable views. */
+  readonly VITE_CAMPAIGN_REWARD_MODULE_ADDRESS: string;
 }
 
 interface ImportMeta {

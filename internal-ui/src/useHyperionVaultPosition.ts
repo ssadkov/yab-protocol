@@ -66,6 +66,14 @@ function hyperionPositionsUrl(): string {
   return `${DEFAULT_HYPERION_USER_POSITIONS_URL}${q}`;
 }
 
+/** Sum `amountUSD` for Yield AI / Hyperion unclaimed fee + farm legs (off-chain estimate). */
+export function unclaimedFeesFarmUsd(entry: HyperionPositionEntry | undefined): number {
+  if (!entry) return 0;
+  const sum = (rows: { amountUSD: string }[] | undefined) =>
+    !rows?.length ? 0 : rows.reduce((acc, r) => acc + Number(r.amountUSD || 0), 0);
+  return sum(entry.fees?.unclaimed) + sum(entry.farm?.unclaimed);
+}
+
 export function feeTokenLabel(
   pool: HyperionPoolInfo,
   tokenAddress: string,

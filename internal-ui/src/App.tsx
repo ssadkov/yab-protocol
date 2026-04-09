@@ -34,7 +34,10 @@ import {
 } from "./format";
 import { getAptos } from "./aptosClient";
 import { toEntryU64, transactionHashFromSubmit } from "./moveArgs";
-import { useHyperionVaultPosition } from "./useHyperionVaultPosition";
+import {
+  unclaimedFeesFarmUsd,
+  useHyperionVaultPosition,
+} from "./useHyperionVaultPosition";
 import { useVaultData } from "./useVaultData";
 import { useWalletBalances } from "./useWalletBalances";
 
@@ -180,6 +183,45 @@ export default function App() {
     if (supply === 0n) return null;
     return (Number(balanceYab) / Number(supply)) * 100;
   }, [data, balanceYab]);
+
+  const vaultUnclaimedFeesFarmUsd = useMemo(
+    () => unclaimedFeesFarmUsd(hyperionPositions[0]),
+    [hyperionPositions],
+  );
+
+  const userUnclaimedFeesFarmEstUsd = useMemo(() => {
+    if (!data || balanceYab == null || balanceYab === 0n) return null;
+    const supply = data.yabSupplyRaw;
+    if (supply === 0n) return null;
+    const u = vaultUnclaimedFeesFarmUsd;
+    if (u <= 0) return 0;
+    return (Number(balanceYab) / Number(supply)) * u;
+  }, [data, balanceYab, vaultUnclaimedFeesFarmUsd]);
+
+  const unclaimedVaultUsdLabel = useMemo(() => {
+    if (hyperionLoading) return "…";
+    if (hyperionError) return "—";
+    if (hyperionPositions.length === 0) return "—";
+    return formatUsd(vaultUnclaimedFeesFarmUsd);
+  }, [
+    hyperionLoading,
+    hyperionError,
+    hyperionPositions.length,
+    vaultUnclaimedFeesFarmUsd,
+  ]);
+
+  const unclaimedUserEstUsdLabel = useMemo(() => {
+    if (hyperionLoading) return "…";
+    if (hyperionError) return "—";
+    if (hyperionPositions.length === 0) return "—";
+    if (userUnclaimedFeesFarmEstUsd == null) return "—";
+    return formatUsd(userUnclaimedFeesFarmEstUsd);
+  }, [
+    hyperionLoading,
+    hyperionError,
+    hyperionPositions.length,
+    userUnclaimedFeesFarmEstUsd,
+  ]);
 
   const exchangeRateHint = useMemo(() => {
     if (!data || !navUsd) return null;
@@ -612,6 +654,8 @@ export default function App() {
               yabUsdLabel={yabUsdLabel}
               sharePctLabel={shareStr}
               balErr={balErr}
+              unclaimedVaultUsdLabel={unclaimedVaultUsdLabel}
+              unclaimedUserEstUsdLabel={unclaimedUserEstUsdLabel}
             />
           )}
           <HeroStats

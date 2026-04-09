@@ -115,4 +115,12 @@
 
 ---
 
-*Last updated: from user-confirmed successful mainnet deposit.*
+## Hyperion campaign rewards (no on-chain vault ingest yet)
+
+Hyperion’s campaign module (`0xbefca24468c1cce695166e97c90adbd9fc07e4889e6dd1c647bed4bc237e1736::reward`) exposes `claim_reward_by_pool` / `claim_all_reward` as **`public entry` only**. The YAB vault cannot call them with `vault_signer` (same pattern as `pool_v3::claim_rewards`) because `entry` functions are not callable from other Move modules, and EOA claims typically fail when rewards are keyed to the **vault object** (`E_USER_NOT_EXISTS`).
+
+The internal UI may still show **accrued** amounts from `get_claimable_reward` / `get_claimable_reward_by_pool` for the vault address; **claiming into the vault** requires a supported API from Hyperion (see draft request: [`HYPERION_CAMPAIGN_REWARD_REQUEST.md`](./HYPERION_CAMPAIGN_REWARD_REQUEST.md)).
+
+---
+
+*Last updated: campaign rewards — UI / off-chain views only until Hyperion integration path is confirmed.*
