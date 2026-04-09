@@ -1666,9 +1666,21 @@ module yab::vault {
                 assert!(pos_equiv > 0, errors::zero_supply());
                 let need_btc_equiv = usdc_raw_to_btc_raw_equiv(remaining_usdc, btc_price);
                 let liq_rm = {
-                    let x = (pos_liq * (need_btc_equiv as u128)) / ((pos_equiv as u128) + 1);
-                    let x = if (x == 0) { 1u128 } else { x };
-                    if (x > pos_liq) { pos_liq } else { x }
+                    let base = (pos_liq * (need_btc_equiv as u128)) / ((pos_equiv as u128) + 1);
+                    let base = if (base == 0) { 1u128 } else { base };
+                    // Progressive fail-safe: if prior attempt did not cover `remaining_usdc`, escalate removal size.
+                    // 1st attempt: base quote
+                    // 2nd attempt: >=2x base (bounded by position liquidity)
+                    // 3rd attempt: all remaining liquidity
+                    if (attempts >= 3) {
+                        pos_liq
+                    } else if (attempts == 2) {
+                        let doubled = if (base > (pos_liq / 2)) { pos_liq } else { base * 2 };
+                        let escalated = if (doubled > base) { doubled } else { base + 1 };
+                        if (escalated > pos_liq) { pos_liq } else { escalated }
+                    } else {
+                        if (base > pos_liq) { pos_liq } else { base }
+                    }
                 };
 
                 let deadline = timestamp::now_seconds() + DEADLINE_SECS;
