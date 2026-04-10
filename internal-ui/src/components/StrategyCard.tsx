@@ -1,3 +1,5 @@
+import { useMemo } from "react";
+import { pricePoolToken2PerToken1AtTick } from "../clmmTickMath";
 import type { HyperionPositionEntry } from "../useHyperionVaultPosition";
 import { feeTokenLabel, unclaimedFeesFarmUsd } from "../useHyperionVaultPosition";
 import { shortAddress } from "../addresses";
@@ -69,6 +71,72 @@ export function StrategyCard({
   const symB = pool?.token2Info.symbol ?? TOKEN_B_SYMBOL;
   const isUsdLike = symB.toUpperCase() === "USDC" || symB.toUpperCase() === "USD";
   const usdPrefix = isUsdLike ? "$" : "";
+
+  const priceAtLower = useMemo(() => {
+    if (!pool) return null;
+    return pricePoolToken2PerToken1AtTick(
+      tickLower,
+      pool,
+      vault
+        ? {
+            tokenAMetadata: vault.tokenAMetadata,
+            tokenADecimals: vault.tokenADecimals,
+            tokenBDecimals: vault.tokenBDecimals,
+          }
+        : null,
+      4,
+    );
+  }, [
+    pool,
+    tickLower,
+    vault?.tokenAMetadata,
+    vault?.tokenADecimals,
+    vault?.tokenBDecimals,
+  ]);
+
+  const priceAtCurrent = useMemo(() => {
+    if (!pool) return null;
+    return pricePoolToken2PerToken1AtTick(
+      currentTick,
+      pool,
+      vault
+        ? {
+            tokenAMetadata: vault.tokenAMetadata,
+            tokenADecimals: vault.tokenADecimals,
+            tokenBDecimals: vault.tokenBDecimals,
+          }
+        : null,
+      4,
+    );
+  }, [
+    pool,
+    currentTick,
+    vault?.tokenAMetadata,
+    vault?.tokenADecimals,
+    vault?.tokenBDecimals,
+  ]);
+
+  const priceAtUpper = useMemo(() => {
+    if (!pool) return null;
+    return pricePoolToken2PerToken1AtTick(
+      tickUpper,
+      pool,
+      vault
+        ? {
+            tokenAMetadata: vault.tokenAMetadata,
+            tokenADecimals: vault.tokenADecimals,
+            tokenBDecimals: vault.tokenBDecimals,
+          }
+        : null,
+      4,
+    );
+  }, [
+    pool,
+    tickUpper,
+    vault?.tokenAMetadata,
+    vault?.tokenADecimals,
+    vault?.tokenBDecimals,
+  ]);
 
   return (
     <div className="mb-8 rounded-xl border-l-4 border-primary bg-surface-container-low p-6 shadow-lg md:p-8">
@@ -213,12 +281,36 @@ export function StrategyCard({
       )}
 
       <div className="relative pb-2 pt-4">
-        <div className="mb-2 flex justify-between font-mono text-[10px] uppercase text-on-surface-variant/60">
-          <span>Min Tick: {hp ? tickLower : "—"}</span>
-          <span className={inRange ? "font-bold text-secondary" : ""}>
-            Current: {hp ? currentTick : "—"}
-          </span>
-          <span>Max Tick: {hp ? tickUpper : "—"}</span>
+        <div className="mb-2 grid grid-cols-3 gap-2 font-mono text-[10px] uppercase text-on-surface-variant/60">
+          <div className="min-w-0 text-left">
+            <div>Min Tick: {hp ? tickLower : "—"}</div>
+            {hp && pool && priceAtLower != null && (
+              <div className="mt-1 break-all normal-case text-[9px] leading-snug text-on-surface-variant/75">
+                1 {symA} ≈ {usdPrefix}
+                {priceAtLower} {symB}
+              </div>
+            )}
+          </div>
+          <div className="min-w-0 text-center">
+            <span className={inRange ? "font-bold text-secondary" : ""}>
+              Current: {hp ? currentTick : "—"}
+            </span>
+            {hp && pool && priceAtCurrent != null && (
+              <div className="mt-1 break-all normal-case text-[9px] leading-snug text-on-surface-variant/75">
+                1 {symA} ≈ {usdPrefix}
+                {priceAtCurrent} {symB}
+              </div>
+            )}
+          </div>
+          <div className="min-w-0 text-right">
+            <div>Max Tick: {hp ? tickUpper : "—"}</div>
+            {hp && pool && priceAtUpper != null && (
+              <div className="mt-1 break-all normal-case text-[9px] leading-snug text-on-surface-variant/75">
+                1 {symA} ≈ {usdPrefix}
+                {priceAtUpper} {symB}
+              </div>
+            )}
+          </div>
         </div>
         <div className="relative h-3 w-full overflow-hidden rounded-full bg-surface-container-high">
           {hp && (
