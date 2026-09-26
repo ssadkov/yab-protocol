@@ -83,6 +83,7 @@ aptos move run \
 - [`docs/DEPOSITS_AND_CLMM_MINS.md`](docs/DEPOSITS_AND_CLMM_MINS.md) — why **`EAMOUNT_*_TOO_LESS`** happened, vault changes (zero **`min_a`/`min_b`** on deposits, rebalance **`min_b`**, rewards/treasury, **`should_rebalance`** u128), and **`deposit_usdc`** (USDC-only / token B).
 - [`docs/PYTH_ORACLE.md`](docs/PYTH_ORACLE.md) — Hermes / Pyth, views, and safety params.
 - [`docs/MAINNET.md`](docs/MAINNET.md) — mainnet smoke-test log.
+- [`docs/MULTISIG_DEPLOY_KEY.md`](docs/MULTISIG_DEPLOY_KEY.md) — rotate the package publisher from a single CLI key to a 2-of-3 Petra vault.
 - [`docs/WITHDRAW_AND_CLAIM.md`](docs/WITHDRAW_AND_CLAIM.md) — user `withdraw` and operator `claim_rewards`.
 
 ## Build
