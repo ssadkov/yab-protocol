@@ -31,6 +31,8 @@ Threshold **2 of 3**. The same three Petra accounts were used on testnet and mai
 | 2 | `0xc9eceb24a8e6cb1065a150587e6ccd604fcc644b73513184309d8f47ceca925a` |
 | 3 | `0xd862aaaaccdbff20ec8648bd401c9e4d02377a72e8a33de8d4118659513880ca` |
 
+To change the owners, follow [`KEY_CEREMONY.md`](./KEY_CEREMONY.md).
+
 Browser Petra and mobile Petra are different owners only when they are different addresses. A synced copy of the same key is one owner.
 
 Each owner who will sign needs APT on that network. The creator of a proposal auto-votes yes, so a 2-of-3 needs one more Approve. Any owner can Execute after the threshold is met. The executor pays execute gas. On this cutover, proposing a publish used about 97k gas, an approve used 246 gas, and executing the publish used 1.7k–38k gas depending on the package. `0.1` APT on the approving owner was enough for approve plus execute. An owner with `0` APT cannot sign.
